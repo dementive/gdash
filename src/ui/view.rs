@@ -94,6 +94,16 @@ pub struct DetailsSheet;
 pub struct Toast;
 #[derive(Component)]
 pub struct RunningOverlay;
+/// The white-out of the launch splash; covers the chrome while the stamp shows.
+#[derive(Component)]
+pub struct LaunchFlash;
+/// The game's logo (or name) stamped over the white-out.
+#[derive(Component)]
+pub struct LaunchStamp;
+#[derive(Component)]
+pub struct StampLogo;
+#[derive(Component)]
+pub struct StampText;
 
 /// Text labels updated by content.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -451,7 +461,7 @@ pub fn spawn_static(
         Slot::Count,
         ShelfCount,
         Text::new(""),
-        theme::font(15.0, FontWeight::NORMAL),
+        theme::numeric_font(15.0, FontWeight::NORMAL),
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.55)),
         Node {
             position_type: PositionType::Absolute,
@@ -541,11 +551,11 @@ fn spawn_top_bar(commands: &mut Commands) {
             bar.spawn((
                 Slot::Status,
                 Text::new(""),
-                theme::font(15.0, FontWeight::NORMAL),
+                theme::numeric_font(15.0, FontWeight::NORMAL),
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.6)),
                 Pickable::IGNORE,
             ));
-            bar.spawn((Slot::Clock, Text::new(""), theme::font(20.0, FontWeight::LIGHT), TextColor(WHITE), Pickable::IGNORE));
+            bar.spawn((Slot::Clock, Text::new(""), theme::numeric_font(20.0, FontWeight::LIGHT), TextColor(WHITE), Pickable::IGNORE));
         });
 }
 
@@ -572,6 +582,8 @@ fn spawn_info(commands: &mut Commands) {
                 Slot::LogoText,
                 Text::new(""),
                 theme::font(58.0, FontWeight::SEMIBOLD),
+                // Display sizes read tighter in Segoe UI's default tracking.
+                theme::tracking(-0.6),
                 TextColor(WHITE),
                 TextShadow { offset: Vec2::new(0.0, 4.0), color: Color::srgba(0.0, 0.0, 0.0, 0.75) },
                 Node { max_width: px(720), ..default() },
@@ -600,6 +612,7 @@ fn spawn_info(commands: &mut Commands) {
                             border: UiRect::all(px(2)),
                             ..default()
                         },
+                        UiTransform::default(),
                         BackgroundColor(Color::srgba(0.07, 0.08, 0.11, 0.92)),
                         BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.2)),
                         BoxShadow(vec![shadow(Color::NONE, 0.0, 16.0, 0.0)]),
@@ -796,6 +809,60 @@ fn spawn_overlays(commands: &mut Commands, glass: &Glass) {
                 theme::font(28.0, FontWeight::LIGHT),
                 TextColor(WHITE),
                 TextLayout::justify(Justify::Center),
+            ));
+        });
+
+    // The launch splash's white-out, over every piece of chrome.
+    commands.spawn((
+        LaunchFlash,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        GlobalZIndex(150),
+        Pickable::IGNORE,
+    ));
+
+    // The game's mark, stamped into the white-out (see update_launch_splash).
+    commands
+        .spawn((
+            LaunchStamp,
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100),
+                height: percent(100),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                display: Display::None,
+                ..default()
+            },
+            UiTransform::default(),
+            GlobalZIndex(160),
+            Pickable::IGNORE,
+        ))
+        .with_children(|s| {
+            s.spawn((
+                StampLogo,
+                ImageNode::default(),
+                Node { display: Display::None, ..default() },
+                Pickable::IGNORE,
+            ));
+            s.spawn((
+                StampText,
+                Text::new(""),
+                theme::font(64.0, FontWeight::SEMIBOLD),
+                // Display sizes read tighter in Segoe UI's default tracking.
+                theme::tracking(-0.8),
+                TextColor(WHITE),
+                TextShadow { offset: Vec2::new(0.0, 6.0), color: Color::srgba(0.0, 0.0, 0.0, 0.8) },
+                // Long titles wrap to a centred second line instead of running off-screen.
+                TextLayout::justify(Justify::Center),
+                Node { display: Display::None, max_width: px(1200), ..default() },
+                Pickable::IGNORE,
             ));
         });
 }
@@ -1031,6 +1098,9 @@ pub fn sync_shelf(
                             b.spawn((
                                 Text::new(g.system.label().to_uppercase()),
                                 theme::font(11.0, FontWeight::BOLD),
+                                // Small caps breathe better with a hair of air
+                                // (the mockup's 1px on the badge).
+                                theme::tracking(1.0),
                                 TextColor(WHITE),
                                 Pickable::IGNORE,
                             ));
@@ -1110,7 +1180,9 @@ pub fn animate_shelf(
     lib: Res<Library>,
     mut tex: ResMut<Textures>,
     time: Res<Time>,
-    fx: Res<Fx>,
+    mut fx: ResMut<Fx>,
+    scale: Res<UiScale>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut anim: ResMut<ShelfAnim>,
     mut tiles: Query<(&mut Tile, &mut Node, &mut Outline, &mut BoxShadow, &mut UiTransform)>,
     mut images: Query<(&TileImage, &mut ImageNode, &mut Node), Without<Tile>>,
@@ -1165,6 +1237,7 @@ pub fn animate_shelf(
 
     let breathe = 0.85 + 0.15 * (now * 2.4).sin();
     let ring_color = Color::from(accent.to_srgba().mix(&Srgba::WHITE, 0.35));
+    let press = fx.press_env();
     for (t, mut node, mut outline, mut shadows, mut tf) in &mut tiles {
         let Some(k) = lookup(t.idx) else { continue };
         let s = t.sel;
@@ -1178,21 +1251,23 @@ pub fn animate_shelf(
         if outline.color != ring {
             outline.color = ring;
         }
-        // Glow in the game's own colour, breathing; it flares when the game launches.
+        // Glow in the game's own colour, breathing; it flares when the game launches
+        // and spikes briefly when you press A on it.
         let is_sel = t.idx == sel;
         let flare = if is_sel { launch } else { 0.0 };
-        let glow = alpha(accent, (0.55 * sc * breathe + 0.45 * flare).min(1.0));
+        let dip = if is_sel { press } else { 0.0 };
+        let glow = alpha(accent, (0.55 * sc * breathe + 0.45 * flare + 0.30 * dip).min(1.0));
         if shadows.0[0].color != glow {
             shadows.0[0].color = glow;
             shadows.0[0].blur_radius = px(28.0 + 40.0 * flare);
             shadows.0[0].spread_radius = px(30.0 * flare);
         }
         let e = ease(t.appear);
-        let pop = 1.0 + 0.10 * flare;
+        let pop = 1.0 + 0.10 * flare - 0.045 * dip;
         // The row leans into the move and rights itself as the scroll settles.
         let lag = target - anim.scroll;
         let want = UiTransform {
-            translation: Val2::px(0.0, (1.0 - e) * 60.0 - 14.0 * flare),
+            translation: Val2::px(0.0, (1.0 - e) * 60.0 - 14.0 * flare - 10.0 * dip),
             scale: Vec2::splat(pop),
             rotation: Rot2::radians(0.040 * (lag / 130.0).tanh()),
             ..default()
@@ -1200,6 +1275,16 @@ pub fn animate_shelf(
         if *tf != want {
             *tf = want;
         }
+    }
+
+    // A launch bursts from the selected cover: keep its exact spot (canvas → uv).
+    if let Some(k) = lookup(sel) {
+        let (w, h) = size_of(state[k].1);
+        let canvas_w = windows
+            .single()
+            .map(|w| w.width() / scale.0.max(0.01))
+            .unwrap_or(1600.0);
+        fx.origin = Vec2::new((xs[k] + w * 0.5) / canvas_w, (CANVAS_H - SHELF_BOTTOM - h * 0.5) / CANVAS_H);
     }
 
     // Box art, generated covers, shimmer, dimming and reflections.
@@ -1301,7 +1386,7 @@ pub fn update_info(
     mut logo: Query<(&mut ImageNode, &mut Node), With<LogoImg>>,
     mut block: Query<&mut UiTransform, With<InfoBlock>>,
     mut details_btn: Query<&mut Node, (With<DetailsBtn>, Without<LogoImg>)>,
-    mut play_btn: Query<(&mut BoxShadow, &mut BorderColor), With<PlayBtn>>,
+    mut play_btn: Query<(&mut BoxShadow, &mut BorderColor, &mut UiTransform), (With<PlayBtn>, Without<InfoBlock>)>,
     mut slots: Query<(&Slot, &mut Text, &mut TextColor)>,
 ) {
     let blade = dash.blade();
@@ -1384,7 +1469,7 @@ pub fn update_info(
     if let Ok(mut node) = details_btn.single_mut() {
         set_display(&mut node, game.is_some());
     }
-    if let Ok((mut sh, mut border)) = play_btn.single_mut() {
+    if let Ok((mut sh, mut border, mut tf)) = play_btn.single_mut() {
         let edge = BorderColor::all(alpha(fx.accent_color(), 0.85));
         if *border != edge {
             *border = edge;
@@ -1393,6 +1478,11 @@ pub fn update_info(
         let c = alpha(fx.accent_color(), pulse.min(1.0));
         if sh.0[0].color != c {
             sh.0[0].color = c;
+        }
+        // The pill takes the A-press with the tile: a small, physical dip.
+        let want = UiTransform { scale: Vec2::splat(1.0 - 0.05 * fx.press_env()), ..default() };
+        if *tf != want {
+            *tf = want;
         }
     }
 }
@@ -1411,13 +1501,20 @@ pub fn update_background(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut bg: Query<(&MeshMaterial2d<BgMaterial>, &mut Transform), With<BgNode>>,
     mut backdrop: Local<f32>,
+    mut splash: Local<f32>,
 ) {
     let dt = time.delta_secs();
     // The All grid shows the image as a full-screen backdrop instead of across the top.
     *backdrop = approach(*backdrop, if dash.in_grid() { 1.0 } else { 0.0 }, 7.0, dt.min(0.05));
     let fill = ease(*backdrop);
+    // The launch splash: the picture swells to full-bleed and whites out (see fx.rs
+    // for the timeline; the chrome side is update_launch_splash).
+    *splash = approach(*splash, fx.launch_fill(), 16.0, dt.min(0.05));
     let want_id = dash.selected().and_then(|e| game_of(&lib, e)).map(|g| g.id.clone());
     let current_id = fade.b.as_ref().map(|s| s.id.clone());
+    // A move this frame gives the hero change a direction: the new picture comes in
+    // from the side you flicked, the old one gives way.
+    let dir = fx.move_dir();
     if want_id != current_id {
         match &want_id {
             Some(id) => {
@@ -1426,15 +1523,18 @@ pub fn update_background(
                     let scene = tex.scene(id);
                     fade.b = Some(HeroSlot { id: id.clone(), image, size, scene, age: 0.0 });
                     fade.t = 0.0;
+                    fade.dir = dir;
                 } else if tex.is_missing(id, ArtKind::Hero) && fade.b.is_some() {
                     fade.a = fade.b.take();
                     fade.t = 0.0;
+                    fade.dir = dir;
                 }
             }
             None => {
                 if fade.b.is_some() {
                     fade.a = fade.b.take();
                     fade.t = 0.0;
+                    fade.dir = dir;
                 }
             }
         }
@@ -1476,7 +1576,15 @@ pub fn update_background(
     let motion = |s: &Option<HeroSlot>| -> HeroMotion {
         s.as_ref().map(|x| hero_motion(&x.id, x.age, fx.cam)).unwrap_or_default()
     };
-    let (ma, mb) = (motion(&fade.a), motion(&fade.b));
+    let (mut ma, mut mb) = (motion(&fade.a), motion(&fade.b));
+    // Directional change: the new scene comes in from the side you moved and settles,
+    // the old one slides out of its way. Cam units are small (see background.wgsl);
+    // this stays inside the overscan margin.
+    let step = 5.0 * fade.dir;
+    ma.cam.x += step * super::fx::smoothstep(fade.t, 0.0, 1.0);
+    if let Some(b) = fade.b.as_ref() {
+        mb.cam.x -= step * (-(b.age.max(0.0)) * 4.0).exp();
+    }
     let focal = |s: &Option<HeroSlot>| s.as_ref().and_then(|x| x.scene.as_ref()).map(|d| d.focal).unwrap_or(Vec2::new(0.5, 0.4));
     let has_depth = |s: &Option<HeroSlot>| if s.as_ref().is_some_and(|x| x.scene.is_some()) { 1.0 } else { 0.0 };
     let (fa, fb) = (focal(&fade.a), focal(&fade.b));
@@ -1515,8 +1623,11 @@ pub fn update_background(
         .single()
         .map(|w| Vec2::new(w.physical_width() as f32, w.physical_height() as f32))
         .unwrap_or(screen);
-    mat.zoom = Vec4::new(ma.zoom, mb.zoom, physical.x, physical.y);
-    mat.layout = Vec4::new(fill, 0.0, 0.0, 0.0);
+    // The launch swell leans into the screen as it fills it.
+    let zpush = 1.0 + 0.09 * *splash;
+    mat.zoom = Vec4::new(ma.zoom * zpush, mb.zoom * zpush, physical.x, physical.y);
+    // x: grid backdrop, y: launch swell, z: launch white-out.
+    mat.layout = Vec4::new(fill, *splash, fx.launch_flash(), 0.0);
 
     // Tell the particles where each image is (current one last). While an overlay holds the
     // focus, the picture behind it is blurred and dim — its particles fade out too.
@@ -1677,9 +1788,10 @@ pub fn update_chrome(
     let running_text = running.0.as_ref().map(|r| {
         format!("Now playing\n{}\n\nThe dashboard comes back when the game closes.\nPress {back} to return now.", r.title)
     });
-    // After a launch, the burst plays first and the "now playing" screen fades in over it.
+    // After a launch, the splash plays out first (swell, flash, stamp); the "now
+    // playing" screen fades in over what's left of the flash.
     let reveal = match fx.launch {
-        Some(t) => ((t - 0.45) / 0.45).clamp(0.0, 1.0),
+        Some(t) => ((t - 1.15) / 0.5).clamp(0.0, 1.0),
         None => 1.0,
     };
     if let Ok(mut bg) = running_bg.single_mut() {
@@ -1719,6 +1831,76 @@ pub fn update_chrome(
     for (row, mut bg) in &mut guide_rows {
         let c = if row.0 == dash.guide_sel { Color::srgba(1.0, 1.0, 1.0, 0.14) } else { Color::NONE };
         set_color(&mut bg, BackgroundColor(c));
+    }
+}
+
+// ---------- launch splash ----------
+
+/// The launch splash's chrome: the dark veil that closes over the interface while
+/// the hero sinks beneath it (background.wgsl), and the game's mark stamped into
+/// the black — its logo if it has one, otherwise its name, big.
+#[allow(clippy::type_complexity)]
+pub fn update_launch_splash(
+    dash: Res<Dash>,
+    lib: Res<Library>,
+    mut tex: ResMut<Textures>,
+    fx: Res<Fx>,
+    mut flash: Query<(&mut Node, &mut BackgroundColor), With<LaunchFlash>>,
+    mut stamp: Query<(&mut Node, &mut UiTransform), (With<LaunchStamp>, Without<LaunchFlash>)>,
+    mut logo: Query<(&mut ImageNode, &mut Node), (With<StampLogo>, Without<LaunchStamp>, Without<LaunchFlash>, Without<StampText>)>,
+    mut title: Query<(&mut Text, &mut TextColor, &mut Node), (With<StampText>, Without<LaunchStamp>, Without<LaunchFlash>, Without<StampLogo>)>,
+) {
+    let Some(t) = fx.launch else {
+        if let Ok((mut n, ..)) = flash.single_mut() {
+            set_display(&mut n, false);
+        }
+        if let Ok((mut n, ..)) = stamp.single_mut() {
+            set_display(&mut n, false);
+        }
+        return;
+    };
+    let flash_a = fx.launch_flash();
+    let stamp_a = fx::smoothstep(t, 0.50, 0.78) * (1.0 - fx::smoothstep(t, 1.05, 1.65));
+
+    if let Ok((mut n, mut bg)) = flash.single_mut() {
+        set_display(&mut n, flash_a > 0.0);
+        // A shutter of black, not a flash of light: the game takes over in the dark.
+        set_color(&mut bg, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, flash_a)));
+    }
+
+    let game = dash.selected().and_then(|e| game_of(&lib, e)).cloned();
+    let logo_tex = game.as_ref().and_then(|g| tex.get(&g.id, ArtKind::Logo));
+    if let Ok((mut n, mut tf)) = stamp.single_mut() {
+        set_display(&mut n, stamp_a > 0.0);
+        // Stamps land a touch large and settle, like a seal pressed into the dark.
+        let pop = 0.94 + 0.06 * fx::smoothstep(t, 0.50, 0.92);
+        let want = UiTransform { scale: Vec2::splat(pop), ..default() };
+        if *tf != want {
+            *tf = want;
+        }
+    }
+    if let Ok((mut img, mut node)) = logo.single_mut() {
+        match &logo_tex {
+            Some((h, size)) => {
+                let s = (640.0 / size.x as f32).min(340.0 / size.y as f32);
+                if img.image != *h {
+                    img.image = h.clone();
+                }
+                set_px(&mut node, |n| &mut n.width, (size.x as f32 * s).round());
+                set_px(&mut node, |n| &mut n.height, (size.y as f32 * s).round());
+                let c = Color::srgba(1.0, 1.0, 1.0, stamp_a);
+                if img.color != c {
+                    img.color = c;
+                }
+                set_display(&mut node, true);
+            }
+            None => set_display(&mut node, false),
+        }
+    }
+    if let Ok((mut text, mut color, mut node)) = title.single_mut() {
+        set_text(&mut text, game.as_ref().map(|g| g.title.as_str()).unwrap_or(""));
+        set_color(&mut color, TextColor(Color::srgba(1.0, 1.0, 1.0, stamp_a)));
+        set_display(&mut node, logo_tex.is_none() as bool);
     }
 }
 

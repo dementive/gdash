@@ -1,10 +1,8 @@
 //! Camera post effects and the "juice" timeline: the selected game's signature colour,
-//! kicks on navigation, and the launch burst. Bloom, chromatic aberration and lens
-//! distortion are Bevy's own post stack; they only touch the world-space background, so
-//! the UI on top stays sharp.
+//! kicks on navigation, the press dip and the launch splash. Bloom is Bevy's own post
+//! stack; it only touches the world-space background, so the UI on top stays sharp.
 
 use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
-use bevy::post_process::effect_stack::{ChromaticAberration, LensDistortion};
 use bevy::input::gamepad::{Gamepad, GamepadAxis};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -12,7 +10,6 @@ use bevy::window::PrimaryWindow;
 use super::input::{Device, NavInput};
 use super::state::{Dash, Library, Mode};
 use super::textures::Textures;
-use super::theme::{CANVAS_H, SHELF_BOTTOM, SHELF_LEAD, SIDE, TILE_GAP, TILE_SEL_H, TILE_SEL_W, TILE_W};
 
 /// Each game gets its own atmosphere, picked from its id and art colour, so moving through
 /// the shelf never feels like the same backdrop with a new picture.
@@ -77,10 +74,13 @@ pub struct Fx {
     pub accent: LinearRgba,
     /// 0..1, spikes when the selection or category changes and decays quickly.
     pub kick: f32,
-    /// Seconds since a game was launched, while the launch burst plays.
+    /// Seconds since a game was launched, while the launch splash plays.
     pub launch: Option<f32>,
     /// Where the burst comes from (the selected cover), in screen UV.
+    /// Written by the shelf / grid layout each frame.
     pub origin: Vec2,
+    /// Seconds since the A button was pressed on a game (the press dip).
+    pub press: Option<f32>,
     /// The atmosphere on screen and how much of it is showing (fades between games).
     pub look: GameLook,
     pub look_amount: f32,
@@ -90,6 +90,12 @@ pub struct Fx {
     pub cam: Vec2,
     push: Vec2,
     last: Option<(usize, usize)>,
+}
+
+/// Hermite smoothstep between `a` and `b`.
+pub fn smoothstep(t: f32, a: f32, b: f32) -> f32 {
+    let x = ((t - a) / (b - a)).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 impl Fx {
@@ -106,8 +112,44 @@ impl Fx {
         }
     }
 
+    /// 0..1, the hero swelling to full-bleed for the launch. Ends before `launch`
+    /// expires, so the release never pops.
+    pub fn launch_fill(&self) -> f32 {
+        match self.launch {
+            Some(t) => smoothstep(t, 0.0, 0.85) * (1.0 - smoothstep(t, 1.9, 2.45)),
+            None => 0.0,
+        }
+    }
+
+    /// 0..1, the fade-to-black that carries the logo stamp.
+    pub fn launch_flash(&self) -> f32 {
+        match self.launch {
+            Some(t) => smoothstep(t, 0.55, 0.95) * (1.0 - smoothstep(t, 0.95, 1.70)),
+            None => 0.0,
+        }
+    }
+
+    /// Press dip: a quick push down, then release.
+    pub fn press_env(&self) -> f32 {
+        match self.press {
+            Some(t) if t < 0.06 => t / 0.06,
+            Some(t) => (-(t - 0.06) * 9.0).exp(),
+            None => 0.0,
+        }
+    }
+
     pub fn start_launch(&mut self) {
         self.launch = Some(0.0);
+    }
+
+    pub fn start_press(&mut self) {
+        self.press = Some(0.0);
+    }
+
+    /// The direction of this frame's move (-1, 0 or 1): hero changes read it to enter
+    /// from the side you flicked.
+    pub fn move_dir(&self) -> f32 {
+        self.push.x.signum()
     }
 }
 
@@ -128,8 +170,6 @@ pub fn camera() -> impl Bundle {
             max_mip_dimension: 512,
             scale: Vec2::ONE,
         },
-        ChromaticAberration { intensity: 0.0, ..default() },
-        LensDistortion { intensity: 0.0, ..default() },
     )
 }
 
@@ -143,7 +183,7 @@ pub fn update_fx(
     windows: Query<&Window, With<PrimaryWindow>>,
     pads: Query<&Gamepad>,
     nav: Res<NavInput>,
-    mut cam: Query<(&mut Bloom, &mut ChromaticAberration, &mut LensDistortion)>,
+    mut cam: Query<&mut Bloom>,
 ) {
     let dt = time.delta_secs();
     let sel = dash.sel[dash.current];
@@ -189,13 +229,10 @@ pub fn update_fx(
             fx.launch = None;
         }
     }
-    if fx.launch.is_none() {
-        // Track the selected cover so a launch bursts from it.
-        if let Ok(w) = windows.single() {
-            let canvas_w = w.width() / (w.height() / CANVAS_H).max(0.3);
-            let x = SIDE + sel.min(SHELF_LEAD) as f32 * (TILE_W + TILE_GAP) + TILE_SEL_W * 0.5;
-            let y = CANVAS_H - SHELF_BOTTOM - TILE_SEL_H * 0.5;
-            fx.origin = Vec2::new(x / canvas_w, y / CANVAS_H);
+    if let Some(p) = fx.press.as_mut() {
+        *p += dt;
+        if *p > 0.5 {
+            fx.press = None;
         }
     }
 
@@ -237,22 +274,12 @@ pub fn update_fx(
     fx.cam = fx.cam.lerp(goal, k);
 
     let env = fx.launch_env();
-    let kick = fx.kick * fx.kick;
-    let Ok((mut bloom, mut ca, mut lens)) = cam.single_mut() else { return };
+    let Ok(mut bloom) = cam.single_mut() else { return };
+    // Only light answers the input — bloom swells a touch while a launch plays out.
+    // Nothing bends the picture: no lens pinch, no fringing, no warp.
     let want_bloom = BLOOM + 0.30 * env;
     if (bloom.intensity - want_bloom).abs() > 1e-4 {
         bloom.intensity = want_bloom;
-    }
-    let want_ca = 0.010 * kick + 0.05 * env;
-    if (ca.intensity - want_ca).abs() > 1e-5 {
-        ca.intensity = want_ca;
-    }
-    // Category switches pinch slightly; a launch bulges out toward the viewer.
-    let want_lens = -0.06 * kick + 0.45 * env;
-    if (lens.intensity - want_lens).abs() > 1e-5 {
-        lens.intensity = want_lens;
-        lens.scale = 1.0 + 0.35 * want_lens.max(0.0) + 0.06 * (-want_lens).max(0.0);
-        lens.center = if env > 0.0 { fx.origin } else { Vec2::splat(0.5) };
     }
 }
 
@@ -267,5 +294,34 @@ mod tests {
         let styles: std::collections::HashSet<u32> =
             (0..40).map(|i| look_for(&format!("game-{i}"), c).style).collect();
         assert!(styles.len() >= 3, "{styles:?}");
+    }
+
+    #[test]
+    fn launch_envelopes_never_pop() {
+        // The splash must be over (both envelopes back at zero) by the time
+        // `launch` expires at 2.5 s, or the release would jump.
+        let mut fx = Fx { launch: Some(2.5), ..default() };
+        assert!(fx.launch_fill() < 0.001, "fill at expiry: {}", fx.launch_fill());
+        assert_eq!(fx.launch_flash(), 0.0);
+        // And they start from nothing, so the splash eases in.
+        fx.launch = Some(0.0);
+        assert_eq!(fx.launch_fill(), 0.0);
+        assert_eq!(fx.launch_flash(), 0.0);
+        // The flash is a single hump.
+        fx.launch = Some(0.95);
+        let peak = fx.launch_flash();
+        assert!(peak > 0.99, "flash should peak at 0.95 s: {peak}");
+        fx.launch = Some(1.4);
+        assert!(fx.launch_flash() < peak);
+    }
+
+    #[test]
+    fn press_dips_fast_and_recovers() {
+        let mut fx = Fx { press: Some(0.0), ..default() };
+        assert_eq!(fx.press_env(), 0.0);
+        fx.press = Some(0.06);
+        assert!((fx.press_env() - 1.0).abs() < 1e-6, "full dip at 60 ms");
+        fx.press = Some(0.4);
+        assert!(fx.press_env() < 0.05, "released well within half a second");
     }
 }

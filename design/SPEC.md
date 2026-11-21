@@ -54,6 +54,7 @@ is 1600 × 900 canvas px. The side margin is 72.
    - Guide (center, glass).
    - Toast.
    - Now playing.
+   - Launch splash (full-screen fade to black with the game's logo stamped in it).
 
 ## Category colours
 
@@ -83,6 +84,25 @@ leads with the verdict. Games with no support or unknown ones stay off the tab.
 ## Motion
 
 - **Tiles:** size and position use an exponential ease (rate 14/s).
+- **Press:** A on a game dips the selected cover and the Play pill for ~120 ms, spiking its
+  glow; on a real launch it flows straight into the launch sequence.
+- **Launch:** the cover dips and flares (0–0.15 s), the hero swells from its showcase crop
+  to full-bleed while pushing in (0–0.9 s), the screen sinks to black and the game's logo —
+  or its name, set big — stamps into the dark (0.5–1.6 s), and the game takes over.
 - **Category change:** the new shelf rises 60 px and fades in, staggered 40 ms per tile. The
-  info block slides 16 px from the left and fades in over 250 ms.
+  info block slides 16 px from the left and fades in over 250 ms. The new hero enters from
+  the side you moved and settles; the old one slides out of its way.
 - **Startup:** fade in from black over 0.6 s, with the same shelf rise.
+
+## Type
+
+Segoe UI Variable with optical sizing when it's installed (Windows 11), classic Segoe UI
+otherwise. The clock, the status line and the `n / total` counters use tabular figures so
+they hold still as digits change. The 58 px title tightens its tracking; small uppercase
+labels (the Recent badge) loosen theirs, as in the mockup.
+
+## Grain
+
+The background carries a screen-anchored whisper of grain (triangular dither, ±0.0012
+linear). It kills banding in the smooth dark gradients on 8-bit panels and keeps the big
+soft washes alive; the art drifts under it, the grain doesn't.

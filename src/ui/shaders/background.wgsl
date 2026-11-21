@@ -39,8 +39,9 @@ struct FragIn {
 @group(2) @binding(20) var fxmap_a_s: sampler;
 @group(2) @binding(21) var fxmap_b: texture_2d<f32>;
 @group(2) @binding(22) var fxmap_b_s: sampler;
-// x: 0 = showcase (image across the top, UI shading), 1 = backdrop (image fills the screen,
-// for the All grid). In between while switching.
+// x: 0 = showcase (image across the top, UI shading), 1 = backdrop (image fills the
+// screen, for the All grid). In between while switching. The launch splash borrows
+// the same full-screen layout: y is its swell, z its white-out.
 @group(2) @binding(23) var<uniform> backdrop: vec4<f32>;
 
 const INK: vec3<f32> = vec3<f32>(0.0009, 0.0015, 0.0024); // #030508 in linear
@@ -73,7 +74,7 @@ fn layout_params(screen: vec2<f32>, tex: vec2<f32>, f: vec2<f32>) -> vec4<f32> {
     let shown2 = screen / (tex * max(screen.x / tex.x, screen.y / tex.y) * OVERSCAN);
     let cx2 = clamp(f.x, shown2.x * 0.5, 1.0 - shown2.x * 0.5);
     let cy2 = clamp(f.y, shown2.y * 0.5, 1.0 - shown2.y * 0.5);
-    return mix(vec4<f32>(cx1, y01, shown1), vec4<f32>(cx2, cy2 - 0.5 * shown2.y, shown2), backdrop.x);
+    return mix(vec4<f32>(cx1, y01, shown1), vec4<f32>(cx2, cy2 - 0.5 * shown2.y, shown2), max(backdrop.x, backdrop.y));
 }
 
 fn hero_uv(uv: vec2<f32>, screen: vec2<f32>, tex: vec2<f32>, z: f32, f: vec2<f32>) -> vec2<f32> {
@@ -202,8 +203,9 @@ fn magnification(screen: vec2<f32>, tex: vec2<f32>, z: f32, f: vec2<f32>) -> f32
 }
 
 // The image fades out over its lower part into the scene below, and is absent past it.
+// The grid backdrop and the launch swell both take the whole screen.
 fn hero_mask(huv: vec2<f32>) -> f32 {
-    return mix(1.0 - smoothstep(0.7, 1.0, huv.y), 1.0, backdrop.x);
+    return mix(1.0 - smoothstep(0.7, 1.0, huv.y), 1.0, max(backdrop.x, backdrop.y));
 }
 
 fn srgb_alpha(a: f32) -> f32 {
@@ -416,6 +418,20 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
         let d = length((uv - fx.zw) * vec2<f32>(aspect, 1.0));
         col += (light * 0.8 + vec3<f32>(0.4)) * fx.x * (2.4 * exp(-d * 2.5) + 0.22);
     }
+
+    // ...then the swell completes and the screen sinks into darkness — the UI's veil
+    // (update_launch_splash) covers the chrome the same way, and the game's mark
+    // stamps into the black before the game takes over.
+    if (backdrop.z > 0.0) {
+        col = mix(col, INK, backdrop.z);
+    }
+
+    // Screen-anchored grain: it dithers the smooth dark gradients (banding dies on
+    // 8-bit panels) and keeps the big soft washes alive. Triangular, so it averages
+    // out to nothing; the picture drifts under it, the grain doesn't.
+    let gp = (uv * zoom.zw) % vec2<f32>(256.0);
+    let g = hash2(gp).x + hash2(gp * 1.37 + vec2<f32>(91.3, 17.7)).y - 1.0;
+    col += g * 0.0012;
 
     return vec4<f32>(col, 1.0);
 }

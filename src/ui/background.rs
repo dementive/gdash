@@ -1,6 +1,5 @@
 //! Full-screen showcase background, drawn in the world (not the UI) so Bevy's HDR post
-//! stack — bloom, chromatic aberration, lens distortion — works on it. The UI is drawn on top
-//! afterwards and stays crisp.
+//! stack — bloom — works on it. The UI is drawn on top afterwards and stays crisp.
 
 use std::sync::Arc;
 
@@ -65,7 +64,8 @@ pub struct BgMaterial {
     #[texture(21)]
     #[sampler(22)]
     pub fxmap_b: Handle<Image>,
-    /// x: 0 showcase layout, 1 full-screen backdrop (All grid)
+    /// x: 0 showcase layout, 1 full-screen backdrop (All grid); y: launch swell to
+    /// full-screen; z: launch white-out.
     #[uniform(23)]
     pub layout: Vec4,
 }
@@ -113,4 +113,7 @@ pub struct HeroFade {
     pub a: Option<HeroSlot>,
     pub b: Option<HeroSlot>,
     pub t: f32,
+    /// -1, 0 or 1: the direction the last swap came from (Q/E and shelf moves). The
+    /// new hero enters from that side; the old one gives way to it.
+    pub dir: f32,
 }

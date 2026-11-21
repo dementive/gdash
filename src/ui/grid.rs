@@ -114,7 +114,7 @@ pub fn spawn(commands: &mut Commands) {
             h.spawn((
                 GridText::Count,
                 Text::new(""),
-                theme::font(15.0, FontWeight::NORMAL),
+                theme::numeric_font(15.0, FontWeight::NORMAL),
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.55)),
                 Pickable::IGNORE,
             ));
@@ -303,7 +303,7 @@ pub fn animate_grid(
     lib: Res<Library>,
     mut tex: ResMut<Textures>,
     time: Res<Time>,
-    fx: Res<Fx>,
+    mut fx: ResMut<Fx>,
     scale: Res<UiScale>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut anim: ResMut<GridAnim>,
@@ -377,6 +377,7 @@ pub fn animate_grid(
     let ring = Color::from(accent.to_srgba().mix(&Srgba::WHITE, 0.35));
     let breathe = 0.85 + 0.15 * (time.elapsed_secs() * 2.4).sin();
     let launch = fx.launch_env();
+    let press = fx.press_env();
     // Distance in cards from the selection: neighbours swell a touch, far cards recede.
     let (sc0, sr0) = ((sel % cols) as f32, (sel / cols) as f32);
     let dist = |i: usize| (((i % cols) as f32 - sc0).powi(2) + ((i / cols) as f32 - sr0).powi(2)).sqrt();
@@ -415,8 +416,10 @@ pub fn animate_grid(
         if outline.color != col {
             outline.color = col;
         }
-        let flare = if t.idx == sel { launch } else { 0.0 };
-        let glow = super::theme::alpha(accent, (0.6 * sc * breathe + 0.4 * flare).min(1.0));
+        let is_sel = t.idx == sel;
+        let flare = if is_sel { launch } else { 0.0 };
+        let dip = if is_sel { press } else { 0.0 };
+        let glow = super::theme::alpha(accent, (0.6 * sc * breathe + 0.4 * flare + 0.3 * dip).min(1.0));
         if shadows.0[0].color != glow {
             shadows.0[0].color = glow;
         }
@@ -429,10 +432,11 @@ pub fn animate_grid(
         }
         let e = ease(t.appear);
         // Only the selected card moves: it lifts straight up on its spring (overshooting
-        // a touch, then settling back down). Every other card stays perfectly still.
+        // a touch, then settling back down) and dips under an A-press. Every other card
+        // stays perfectly still.
         let want_tf = UiTransform {
-            translation: Val2::px(0.0, (1.0 - e) * 24.0 - 10.0 * sc),
-            scale: Vec2::splat(1.0),
+            translation: Val2::px(0.0, (1.0 - e) * 24.0 - 10.0 * sc - 8.0 * dip),
+            scale: Vec2::splat(1.0 - 0.04 * dip),
             ..default()
         };
         if *tf != want_tf {
@@ -444,6 +448,12 @@ pub fn animate_grid(
             *z = want_z;
         }
     }
+
+    // A launch bursts from the selected card: keep its spot (canvas → uv).
+    let (c, r) = (sel % cols, sel / cols);
+    let ox = x0 + c as f32 * (GRID_W + GRID_GAP) + GRID_W * 0.5;
+    let oy = GRID_TOP + r as f32 * (GRID_H + GRID_GAP) - anim.scroll + GRID_H * 0.5;
+    fx.origin = Vec2::new(ox / size.x, oy / size.y);
 
     let mut missing = Vec::new();
     let mut loading = Vec::new();

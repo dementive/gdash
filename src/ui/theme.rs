@@ -1,17 +1,48 @@
 //! Colours, fonts and layout constants.
 
-use bevy::prelude::*;
-use bevy::text::{FontSize, FontSource, FontWeight};
+use std::sync::OnceLock;
 
-pub const FONT_FAMILY: &str = "Segoe UI";
+use bevy::prelude::*;
+use bevy::text::{FontFeatureTag, FontFeatures, FontSize, FontSource, FontVariationTag, FontVariations, FontWeight, LetterSpacing};
+
+/// Segoe UI Variable (Windows 11) gives display sizes real display cuts through its
+/// optical-size axis; Windows 10 falls back to classic Segoe UI. `mod.rs` loads the
+/// font files, which register under their family names — this just picks the name.
+fn variable_font() -> bool {
+    static VARIABLE: OnceLock<bool> = OnceLock::new();
+    *VARIABLE.get_or_init(|| std::path::Path::new(r"C:\Windows\Fonts\SegoeUIVariable.ttf").exists())
+}
+
+fn font_family() -> &'static str {
+    if variable_font() { "Segoe UI Variable" } else { "Segoe UI" }
+}
 
 pub fn font(px: f32, weight: FontWeight) -> TextFont {
-    TextFont {
-        font: FontSource::Family(FONT_FAMILY.into()),
+    let mut f = TextFont {
+        font: FontSource::Family(font_family().into()),
         font_size: FontSize::Px(px),
         weight,
         ..default()
+    };
+    if variable_font() {
+        // Optical sizing: the 58-px title gets the display cut, body text the text cut.
+        f.font_variations = FontVariations::builder()
+            .set(FontVariationTag::OPTICAL_SIZE, px.clamp(8.0, 36.0))
+            .build();
     }
+    f
+}
+
+/// Tabular figures: the clock and the counters hold still as their digits change.
+pub fn numeric_font(px: f32, weight: FontWeight) -> TextFont {
+    let mut f = font(px, weight);
+    f.font_features = FontFeatures::builder().enable(FontFeatureTag::TABULAR_FIGURES).build();
+    f
+}
+
+/// Letterspacing as a component (display titles tighten, small caps loosen).
+pub fn tracking(px: f32) -> LetterSpacing {
+    LetterSpacing::Px(px)
 }
 
 /// Windows 11's icon font (falls back to MDL2 Assets on Windows 10).

@@ -37,7 +37,7 @@ the dashboard immediately and refresh it in the background.
 | `--fetch-art` | Download missing artwork and print a coverage table |
 | `--refresh-art` | Retry artwork that previously wasn't found |
 | `--enhance-art` | Run the ML pass now (depth maps, segmentation, upscaling); the dashboard also does this in the background |
-| `--nav <keys> --screenshot <file.png>` | Scripted navigation (`L R` move, `Q E` category, `A B Y G` buttons, `K P` keyboard/controller prompts, `X` dry-run launch burst, `W` wait 4 s) then a screenshot; used for visual checks |
+| `--nav <keys> --screenshot <file.png>` | Scripted navigation (`L R` move, `Q E` category, `A B Y G` buttons, `K P` keyboard/controller prompts, `X` dry-run launch splash, `W` wait 4 s) then a screenshot; used for visual checks |
 
 ## Controls
 
@@ -104,8 +104,8 @@ retries ones that came back unknown, and a config override fixes any game for go
 
 ## Look and effects
 
-The background is drawn in the world on an HDR camera, so Bevy's post stack (bloom, chromatic
-aberration, lens distortion) applies to it while the UI stays sharp. Each game gets:
+The background is drawn in the world on an HDR camera, so Bevy's bloom applies to it while
+the UI stays sharp. Each game gets:
 
 - its **own colour**, picked from its box art, used for the cover glow, Play glow and lighting
 - a **living hero**: the full-width image is cut into rigid cards from the depth map. Every
@@ -116,7 +116,8 @@ aberration, lens distortion) applies to it while the UI stays sharp. Each game g
   parallax) or *push-in* (a very slow zoom into the subject), centred on the depth model's
   focal point, with light swelling on near subjects. Switching games **assembles the new
   scene**: its near cards appear first and the backgrounds swap underneath, like the picture
-  arriving in layers
+  arriving in layers — and it reads the direction you moved, entering from that side and
+  settling while the old scene gives way
 - **effects that come out of the picture**: each hero is read for fire (hot, bright, glowing
   colours), small lights, a dark starry sky, water and tree canopies. Fire flickers and blooms
   and sheds embers that rise off it, and the air above it ripples with heat; lights and stars
@@ -157,8 +158,11 @@ pinned SHA-256 hashes. ONNX Runtime is linked into the exe by the `ort` crate. T
 `enhance_art = false` in the config. Without the depth model, a quick built-in estimate is used;
 your own grayscale `depth.png` (white = near) always wins.
 
-Launching plays a burst: a flash in the game's colour that blooms, a lens bulge, and the
-cover lifting off the shelf.
+Launching is a little sequence now: the cover dips under the A-press, then the hero swells to
+fill the screen (leaning in as it goes), the screen sinks to black and the game's logo stamps
+into the dark, and the game takes over. Pressing A on a wishlist entry just dips the cover.
+Every frame of the background carries a whisper of screen-anchored grain, which dithers the
+smooth dark gradients so they never band.
 
 ## Artwork
 

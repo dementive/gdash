@@ -42,8 +42,8 @@ pub struct Options {
     pub windowed: bool,
     pub screenshot: Option<PathBuf>,
     /// Scripted navigation for automated screenshots: U D L R (move), Q E (category),
-    /// A B Y G (buttons), K / P (keyboard / controller prompts), X (dry-run launch burst),
-    /// `.` = pause.
+    /// A B Y G (buttons), K / P (keyboard / controller prompts), X (dry-run launch
+    /// splash), `.` = pause.
     pub script: String,
 }
 
@@ -160,7 +160,7 @@ pub fn run(opts: Options, cfg: Config) {
                 view::update_info,
                 view::update_background,
                 particles::update_particles,
-                view::update_chrome,
+                (view::update_chrome, view::update_launch_splash).chain(),
                 (glass::update_glass, glass::animate_cards),
                 view::animate_prompts,
                 textures::pump_textures,
@@ -190,9 +190,18 @@ fn low_memory_wgpu() -> bevy::render::settings::WgpuSettings {
 struct Fonts(#[allow(dead_code)] Vec<Handle<Font>>);
 
 /// Loads just the Windows font files we use instead of indexing every installed font.
+/// `SegoeUIVariable.ttf` only exists on Windows 11; on 10 the classic set covers it.
 fn load_fonts(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
     let dir = std::path::Path::new(r"C:\Windows\Fonts");
-    let files = ["segoeui.ttf", "segoeuil.ttf", "seguisb.ttf", "segoeuib.ttf", "SegoeIcons.ttf", "segmdl2.ttf"];
+    let files = [
+        "segoeui.ttf",
+        "segoeuil.ttf",
+        "seguisb.ttf",
+        "segoeuib.ttf",
+        "SegoeUIVariable.ttf",
+        "SegoeIcons.ttf",
+        "segmdl2.ttf",
+    ];
     let handles = files
         .iter()
         .filter_map(|f| std::fs::read(dir.join(f)).ok())
@@ -541,6 +550,9 @@ fn handle_nav(
             if e.launched {
                 fx.start_launch();
             }
+            if e.pressed {
+                fx.start_press();
+            }
             if e.sounds_enabled.is_some() {
                 effects.sounds_enabled = e.sounds_enabled;
             }
@@ -565,6 +577,8 @@ struct Effects {
     sfx: Option<Sfx>,
     exit: bool,
     launched: bool,
+    /// A game was activated: its cover takes the press dip.
+    pressed: bool,
     sounds_enabled: Option<bool>,
 }
 
@@ -578,7 +592,7 @@ struct ActionCtx<'a> {
 }
 
 fn run_action(action: Action, c: &mut ActionCtx) -> Effects {
-    let mut fx = Effects { sfx: Some(Sfx::Select), ..default() };
+    let mut fx = Effects { sfx: Some(Sfx::Select), pressed: matches!(action, Action::Launch(_) | Action::OpenWishlist(_)), ..default() };
     match action {
         Action::Launch(i) => {
             let Some(game) = c.lib.games.get(i).cloned() else { return fx };
@@ -729,8 +743,9 @@ fn autopilot(
                 nav.forced = Some(input::Device::Gamepad);
                 None
             }
-            // Launch burst without starting anything (visual checks).
+            // The full launch visual without starting anything (splash checks).
             'X' => {
+                fx.start_press();
                 fx.start_launch();
                 None
             }

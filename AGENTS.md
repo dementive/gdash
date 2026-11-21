@@ -30,7 +30,7 @@ visuals and keep drift between them and the code deliberate.
 
 - Styling is code, not CSS: colors and layout constants in `src/ui/theme.rs`.
 - The background and particles render in the world on an HDR camera so Bevy's post
-  stack (bloom, CA, lens) hits them; the UI stays sharp on top. New screen effects
+  stack (bloom) hits them; the UI stays sharp on top. New screen effects
   belong in `src/ui/shaders/` (WGSL for Material2d, WESL for UI materials).
 - Overlays sample the glass backdrop via the offscreen copy camera (`src/ui/glass.rs`);
   anything new that must show the blurred picture behind it goes through that.
