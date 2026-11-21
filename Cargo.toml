@@ -1,0 +1,43 @@
+[package]
+name = "gdash"
+version = "0.1.0"
+edition = "2024"
+description = "A blade-style fullscreen game launcher"
+
+[dependencies]
+bevy = { version = "=0.20.1", default-features = false, features = ["ui", "audio", "jpeg", "wav", "png", "keyboard", "mouse", "gamepad", "bevy_sprite_render", "bevy_post_process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+ureq = "3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+directories = "6"
+# On-device ML for artwork (depth maps, super-resolution); runs in a background child process.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-native", "copy-dylibs", "api-24"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Registry",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_SystemInformation",
+  "Win32_System_Console",
+] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

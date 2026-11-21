@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>A — Glass Blades</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: "Segoe UI", sans-serif; }
+  #stage { position: absolute; width: 1600px; height: 900px; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; color: #f4f7fb; }
+  .layer { position: absolute; inset: 0; }
+  #hero, #hero2 { background-size: cover; background-position: center 20%; transition: opacity .7s ease; }
+  #shade { background:
+      linear-gradient(90deg, rgba(4,6,10,.94) 0%, rgba(4,6,10,.78) 38%, rgba(4,6,10,.25) 70%, rgba(4,6,10,.45) 100%),
+      linear-gradient(0deg, rgba(4,6,10,.9) 0%, rgba(4,6,10,0) 35%); }
+  #tint { mix-blend-mode: soft-light; transition: background .6s; opacity: .55; }
+
+  .topbar { position: absolute; left: 64px; right: 64px; top: 34px; display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 600; letter-spacing: .5px; }
+  .orb { width: 22px; height: 22px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #d8ffb0, #5fc21f 45%, #1d5c06 100%); box-shadow: 0 0 18px rgba(120,230,60,.7); }
+  .clock { font-size: 20px; font-weight: 300; opacity: .9; }
+
+  /* Blade spines: thin lit edges, not paint swatches */
+  #spines-l, #spines-r { position: absolute; top: 110px; bottom: 96px; display: flex; gap: 6px; }
+  #spines-l { left: 64px; } #spines-r { right: 64px; }
+  .spine { width: 30px; border-radius: 10px; position: relative; cursor: pointer;
+           background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.03)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+  .spine::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 3px; background: var(--c); box-shadow: 0 0 12px var(--c); }
+  .spine span { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%) rotate(-90deg); transform-origin: center; white-space: nowrap;
+                font-size: 12px; letter-spacing: 3px; font-weight: 600; opacity: .75; width: 0; display: flex; justify-content: flex-start; }
+  .spine span i { font-style: normal; display: block; transform: translateX(0); }
+
+  /* The open blade: dark glass */
+  #panel { position: absolute; top: 110px; bottom: 96px; width: 760px; border-radius: 18px;
+           background: linear-gradient(180deg, rgba(22,28,36,.62), rgba(10,13,18,.72));
+           backdrop-filter: blur(26px) saturate(1.2);
+           box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 0 0 1px rgba(255,255,255,.07), 0 30px 80px rgba(0,0,0,.5);
+           transition: left .45s cubic-bezier(.2,.8,.2,1); overflow: hidden; }
+  #panel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--c); box-shadow: 0 0 24px 2px var(--c); }
+  .phead { padding: 34px 44px 18px 48px; }
+  .phead h1 { margin: 0; font-size: 52px; font-weight: 300; letter-spacing: -.5px; line-height: 1; }
+  .phead p { margin: 10px 0 0; font-size: 15px; letter-spacing: 2px; text-transform: uppercase; opacity: .55; font-weight: 600; }
+
+  #list { padding: 6px 28px 0 32px; }
+  .row { display: flex; align-items: center; gap: 18px; height: 72px; padding: 0 16px; border-radius: 12px; position: relative; transition: background .15s, transform .15s; }
+  .row .thumb { width: 52px; height: 52px; border-radius: 9px; background-size: cover; background-position: center 18%; flex: none;
+                box-shadow: 0 4px 12px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.12); }
+  .row .t { font-size: 21px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .s { font-size: 14px; opacity: .55; margin-top: 2px; }
+  .row.sel { background: linear-gradient(90deg, rgba(255,255,255,.96), rgba(235,242,250,.9)); color: #0b1016; transform: scale(1.02);
+             box-shadow: 0 0 0 1px rgba(255,255,255,.6), 0 0 34px -4px var(--c), 0 10px 30px rgba(0,0,0,.4); }
+  .row.sel .s { opacity: .6; }
+  .row.sel::after { content: "A"; position: absolute; right: 18px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+                    font-size: 15px; font-weight: 700; color: #fff; background: radial-gradient(circle at 35% 30%, #9be36a, #3d9a12); box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+
+  /* Right: the art speaks */
+  #detail { position: absolute; top: 120px; right: 150px; width: 560px; bottom: 110px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; }
+  #logo { max-width: 460px; max-height: 150px; filter: drop-shadow(0 6px 18px rgba(0,0,0,.7)); transition: opacity .3s; }
+  #logotext { font-size: 44px; font-weight: 600; text-align: center; text-shadow: 0 4px 20px rgba(0,0,0,.8); }
+  .coverwrap { position: relative; }
+  #cover { width: 270px; height: 405px; border-radius: 10px; background-size: cover; background-position: center;
+           box-shadow: 0 0 0 1px rgba(255,255,255,.15), 0 30px 60px rgba(0,0,0,.65), 0 0 60px -10px var(--c); transition: transform .35s cubic-bezier(.2,.8,.2,1); }
+  #cover.pop { transform: scale(.95); }
+  #refl { position: absolute; top: 100%; left: 0; width: 270px; height: 110px; margin-top: 8px; border-radius: 10px; background-size: 270px 405px; background-position: bottom;
+          transform: scaleY(-1); opacity: .22; -webkit-mask-image: linear-gradient(0deg, rgba(0,0,0,1), rgba(0,0,0,0) 90%); }
+  .meta { display: flex; gap: 10px; }
+  .chip { padding: 6px 14px; border-radius: 999px; font-size: 14px; background: rgba(255,255,255,.1); box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); backdrop-filter: blur(10px); }
+
+  .prompts { position: absolute; left: 64px; bottom: 36px; display: flex; gap: 28px; font-size: 16px; opacity: .85; }
+  .prompts b { display: inline-grid; place-items: center; min-width: 26px; height: 26px; border-radius: 50%; font-size: 13px; margin-right: 8px; color: #fff; }
+  .pa { background: radial-gradient(circle at 35% 30%, #9be36a, #3d9a12); } .pb { background: radial-gradient(circle at 35% 30%, #ff8a7a, #b8231a); }
+  .pl { border-radius: 6px !important; padding: 0 8px; background: rgba(255,255,255,.18); }
+  .label { position: absolute; right: 64px; bottom: 36px; font-size: 13px; letter-spacing: 2px; opacity: .45; text-transform: uppercase; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hero" class="layer"></div>
+  <div id="hero2" class="layer" style="opacity:0"></div>
+  <div id="tint" class="layer"></div>
+  <div id="shade" class="layer"></div>
+
+  <div class="topbar"><div class="brand"><div class="orb"></div>gdash</div><div class="clock">9:24 PM</div></div>
+  <div id="spines-l"></div>
+  <div id="panel"><div class="phead"><h1 id="bname"></h1><p id="bcount"></p></div><div id="list"></div></div>
+  <div id="spines-r"></div>
+
+  <div id="detail">
+    <img id="logo"><div id="logotext"></div>
+    <div class="coverwrap"><div id="cover"></div><div id="refl"></div></div>
+    <div class="meta" id="meta"></div>
+  </div>
+
+  <div class="prompts"><span><b class="pa">A</b>Play</span><span><b class="pb">B</b>Back</span><span><b class="pl">LB RB</b>Blades</span><span><b class="pl">≡</b>Guide</span></div>
+  <div class="label">Direction A · Glass Blades — ↑↓ move, Q/E blades</div>
+</div>
+<script src="data.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let b = 0, sel = BLADES.map(() => 0), front = 'hero';
+function fit() { const s = Math.min(innerWidth / 1600, innerHeight / 900); $('stage').style.transform = `scale(${s})`; $('stage').style.left = (innerWidth - 1600 * s) / 2 + 'px'; $('stage').style.top = (innerHeight - 900 * s) / 2 + 'px'; }
+function spine(bl, i) { return `<div class="spine" style="--c:${bl.color}" onclick="go(${i})"><span><i>${bl.name.toUpperCase()}</i></span></div>`; }
+function render() {
+  const bl = BLADES[b], g = bl.games[sel[b]];
+  document.documentElement.style.setProperty('--c', bl.color);
+  $('spines-l').innerHTML = BLADES.slice(0, b).map((x, i) => spine(x, i)).join('');
+  $('spines-r').innerHTML = BLADES.slice(b + 1).map((x, i) => spine(x, b + 1 + i)).join('');
+  $('panel').style.left = (64 + b * 36 + (b ? 8 : 0)) + 'px';
+  $('bname').textContent = bl.name; $('bcount').textContent = `${bl.games.length} games`;
+  $('list').innerHTML = bl.games.slice(0, 8).map((x, i) => `<div class="row ${i === sel[b] ? 'sel' : ''}" onmouseenter="pick(${i})"><div class="thumb" style="background-image:url('${art(x.id, 'cover')}')"></div><div style="min-width:0"><div class="t">${x.title}</div><div class="s">${x.sub}</div></div></div>`).join('');
+  const next = front === 'hero' ? 'hero2' : 'hero';
+  $(next).style.backgroundImage = `url('${art(g.id, 'hero')}')`; $(next).style.opacity = 1; $(front).style.opacity = 0; front = next;
+  $('tint').style.background = bl.color;
+  if (g.logo) { $('logo').src = art(g.id, 'logo'); $('logo').style.display = ''; $('logotext').textContent = ''; } else { $('logo').style.display = 'none'; $('logotext').textContent = g.title; }
+  $('cover').style.backgroundImage = $('refl').style.backgroundImage = `url('${art(g.id, 'cover')}')`;
+  $('cover').classList.add('pop'); requestAnimationFrame(() => requestAnimationFrame(() => $('cover').classList.remove('pop')));
+  $('meta').innerHTML = [g.system, g.played].filter(Boolean).map(t => `<span class="chip">${t}</span>`).join('');
+}
+function go(i) { b = Math.max(0, Math.min(BLADES.length - 1, i)); render(); }
+function pick(i) { if (sel[b] !== i) { sel[b] = i; render(); } }
+addEventListener('keydown', e => {
+  const n = Math.min(8, BLADES[b].games.length);
+  if (e.key === 'ArrowDown') pick(Math.min(n - 1, sel[b] + 1));
+  if (e.key === 'ArrowUp') pick(Math.max(0, sel[b] - 1));
+  if (e.key === 'e' || e.key === 'ArrowRight') go(b + 1);
+  if (e.key === 'q' || e.key === 'ArrowLeft') go(b - 1);
+});
+addEventListener('resize', fit); fit(); render();
+</script>
+</body>
+</html>
