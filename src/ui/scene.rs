@@ -20,6 +20,10 @@ pub enum EmitKind {
     Star,
     Leaf,
     Mote,
+    /// Drifts and pulses in dark foliage (needs segmentation).
+    Firefly,
+    /// A rare shooting star across a starry sky (spawned from the star count, not emitters).
+    Meteor,
 }
 
 /// A place in the image that gives off particles.
@@ -187,6 +191,9 @@ pub fn analyse(iw: u32, ih: u32, px: &[u8], w: u32, h: u32, cards: &[u8], seg: O
         smooth(0.5, 0.8, sg(i, 2)) * smooth(0.6, 0.2, above) * visible(i)
     };
     pick(EmitKind::Leaf, &foliage_edge, 0.3, 12, unit * 4);
+    // Fireflies hang around foliage that sits in the dark.
+    let fly_spot = |i: usize| smooth(0.5, 0.8, sg(i, 2)) * smooth(0.30, 0.12, local[i]) * visible(i);
+    pick(EmitKind::Firefly, &fly_spot, 0.35, 8, unit * 3);
     // Motes drift around the lights.
     let lights: Vec<Emitter> = emitters.iter().filter(|e| e.kind == EmitKind::Glint).take(6).cloned().collect();
     emitters.extend(lights.into_iter().map(|e| Emitter { kind: EmitKind::Mote, ..e }));
@@ -297,6 +304,34 @@ mod tests {
         let a = analyse(w, h, &px, w, h, &cards, None);
         assert!(a.emitters.iter().all(|e| e.kind != EmitKind::Ember), "{:?}", a.emitters);
     }
+
+    #[test]
+    fn fireflies_need_dark_foliage() {
+        // A canopy (segmentation B) that is dark at night: fireflies. The same canopy
+        // brightly lit: none.
+        let (w, h) = (80u32, 40u32);
+        let make = |rgb: [u8; 3]| -> (Vec<u8>, Vec<u8>) {
+            let px: Vec<u8> = (0..w * h).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect();
+            // segment.png is rgba at map size: R sky, G water, B foliage, A people.
+            let s: Vec<u8> = (0..w * h).flat_map(|_| [0u8, 0, 255, 0].to_vec()).collect();
+            (px, s)
+        };
+        let cards = vec![128u8; (w * h * 4) as usize];
+        let (night, seg) = make([12, 20, 10]);
+        let a = analyse(w, h, &night, w, h, &cards, Some(&seg));
+        assert!(
+            a.emitters.iter().any(|e| e.kind == EmitKind::Firefly),
+            "dark foliage should have fireflies: {:?}",
+            a.emitters
+        );
+        let (day, seg) = make([150, 190, 90]);
+        let b = analyse(w, h, &day, w, h, &cards, Some(&seg));
+        assert!(
+            b.emitters.iter().all(|e| e.kind != EmitKind::Firefly),
+            "bright foliage should not: {:?}",
+            b.emitters
+        );
+    }
 }
 
 /// `cargo test dump_scene -- --ignored` draws what the analysis found over each hero (set
@@ -340,7 +375,8 @@ fn dump_scene() {
                 EmitKind::Glint => [255, 255, 255, 255],
                 EmitKind::Star => [80, 160, 255, 255],
                 EmitKind::Leaf => [0, 255, 0, 255],
-                EmitKind::Mote => continue,
+                EmitKind::Firefly => [190, 255, 80, 255],
+                EmitKind::Mote | EmitKind::Meteor => continue,
             };
             let (cx, cy) = ((e.uv.x * tw as f32) as i32, (e.uv.y * th as f32) as i32);
             for dy in -3..=3 {

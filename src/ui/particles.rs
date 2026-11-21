@@ -30,7 +30,7 @@ const MIN_COVER: f32 = 0.62;
 const OVERSCAN: f32 = 1.045;
 
 /// At most this many particles at once, whatever the image.
-const MAX_PARTICLES: usize = 90;
+const MAX_PARTICLES: usize = 110;
 
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone, Default)]
 pub struct ParticleMaterial {}
@@ -119,7 +119,9 @@ pub struct Particles {
     list: Vec<Particle>,
     rng: u64,
     /// Spawn credit per kind for the current image.
-    credit: [f32; 5],
+    credit: [f32; 6],
+    /// Seconds until the next meteor (counts down while a starry sky is showing).
+    meteor: f32,
     mesh: Handle<Mesh>,
 }
 
@@ -144,7 +146,7 @@ pub fn register(app: &mut App) {
 
 pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<ParticleMaterial>) {
     let mesh = meshes.add(build_mesh(&[], &[], &[], &[]));
-    commands.insert_resource(Particles { list: Vec::new(), rng: 0x9E37_79B9_7F4A_7C15, credit: [0.0; 5], mesh: mesh.clone() });
+    commands.insert_resource(Particles { list: Vec::new(), rng: 0x9E37_79B9_7F4A_7C15, credit: [0.0; 6], meteor: 10.0, mesh: mesh.clone() });
     commands.spawn((
         ParticleNode,
         Mesh2d(mesh),
@@ -161,6 +163,8 @@ fn kind_index(k: EmitKind) -> usize {
         EmitKind::Star => 2,
         EmitKind::Leaf => 3,
         EmitKind::Mote => 4,
+        EmitKind::Firefly => 5,
+        EmitKind::Meteor => 6,
     }
 }
 
@@ -178,6 +182,9 @@ fn rate(kind: EmitKind, count: usize) -> f32 {
         EmitKind::Star => (0.6 + 0.05 * c).min(1.6),
         EmitKind::Leaf => (0.12 + 0.03 * c).min(0.35),
         EmitKind::Mote => (0.3 + 0.05 * c).min(0.6),
+        EmitKind::Firefly => (0.05 + 0.02 * c).min(0.2),
+        // Meteors come from their own timer, not the emitter credit.
+        EmitKind::Meteor => 0.0,
     }
 }
 
@@ -195,7 +202,7 @@ pub fn update_particles(
 
     // Births, from the image being faded in.
     if let Some(slot) = layout.slots.last().filter(|s| !s.emitters.is_empty()) {
-        for kind in [EmitKind::Ember, EmitKind::Glint, EmitKind::Star, EmitKind::Leaf, EmitKind::Mote] {
+        for kind in [EmitKind::Ember, EmitKind::Glint, EmitKind::Star, EmitKind::Leaf, EmitKind::Mote, EmitKind::Firefly] {
             let pool: Vec<&Emitter> = slot.emitters.iter().filter(|e| e.kind == kind).collect();
             let ki = kind_index(kind);
             parts.credit[ki] = (parts.credit[ki] + rate(kind, pool.len()) * dt * slot.weight).min(3.0);
@@ -277,8 +284,50 @@ pub fn update_particles(
                         color: (e.color * 0.5 + Vec3::splat(0.5)) * 1.2,
                         seed: r2,
                     },
+                    EmitKind::Firefly => Particle {
+                        slot: slot.id.clone(),
+                        kind,
+                        uv: e.uv + jitter * 0.02,
+                        depth: e.depth,
+                        off: Vec2::ZERO,
+                        vel: Vec2::new(r3 - 0.5, r4 - 0.5) * 6.0 * unit,
+                        age: 0.0,
+                        life: 5.0 + 4.0 * r3,
+                        size: (1.7 + 1.3 * r4) * unit,
+                        // Warm green-gold, bright enough to bloom when it pulses.
+                        color: Vec3::new(0.72, 0.95, 0.30) * (2.0 + 1.5 * r3),
+                        seed: r2,
+                    },
+                    // Meteors are born from the timer below, not from an emitter.
+                    EmitKind::Meteor => continue,
                 };
                 parts.list.push(p);
+            }
+        }
+
+        // A rare shooting star across a properly starry sky.
+        let stars: Vec<&Emitter> = slot.emitters.iter().filter(|e| e.kind == EmitKind::Star).collect();
+        if stars.len() >= 8 && parts.list.len() < MAX_PARTICLES {
+            parts.meteor -= dt * slot.weight;
+            if parts.meteor <= 0.0 {
+                parts.meteor = 14.0 + parts.rand() * 22.0;
+                let (r1, r2, r3, r4) = (parts.rand(), parts.rand(), parts.rand(), parts.rand());
+                // Start it somewhere over the sky, streaking down and across.
+                let start = stars[(r1 * stars.len() as f32) as usize].uv;
+                let dir = if r3 < 0.5 { -1.0 } else { 1.0 };
+                parts.list.push(Particle {
+                    slot: slot.id.clone(),
+                    kind: EmitKind::Meteor,
+                    uv: start + Vec2::new((r2 - 0.5) * 0.25, r3 * 0.06),
+                    depth: 0.0,
+                    off: Vec2::ZERO,
+                    vel: Vec2::new(dir * (240.0 + 160.0 * r4), -(130.0 + 80.0 * r2)) * unit,
+                    age: 0.0,
+                    life: 0.7 + 0.3 * r4,
+                    size: 1.4 * unit,
+                    color: Vec3::new(0.85, 0.92, 1.1) * 3.0,
+                    seed: r1,
+                });
             }
         }
     }
@@ -294,6 +343,15 @@ pub fn update_particles(
             }
             EmitKind::Leaf => p.off += (p.vel + Vec2::new(wob * 28.0 * unit, 0.0)) * dt,
             EmitKind::Mote => p.off += (p.vel + Vec2::new(wob, (p.age * 0.9 + p.seed * 7.0).cos()) * 4.0 * unit) * dt,
+            // Fireflies wander lazily through the canopy.
+            EmitKind::Firefly => {
+                let drift = Vec2::new(
+                    (p.age * 0.8 + p.seed * 9.0).sin() * 10.0,
+                    (p.age * 0.6 + p.seed * 7.0).cos() * 8.0,
+                );
+                p.off += (p.vel + drift * unit) * dt;
+            }
+            EmitKind::Meteor => p.off += p.vel * dt,
             EmitKind::Glint | EmitKind::Star => {}
         }
         p.age < p.life && layout.slots.iter().any(|s| s.id == p.slot)
@@ -329,6 +387,18 @@ pub fn update_particles(
                 (2.0, smooth(0.0, 0.1, t) * (1.0 - smooth(0.75, 1.0, t)) * 0.85, Vec2::from_angle(spin), Vec2::new(p.size, p.size * 0.45 * flip))
             }
             EmitKind::Mote => (0.0, (t * std::f32::consts::PI).sin() * 0.35, Vec2::X, Vec2::splat(p.size * 1.5)),
+            EmitKind::Firefly => {
+                // A slow, deep pulse: mostly dark, bright in bursts.
+                let pulse = (p.age * (2.2 + p.seed * 1.6) + p.seed * 30.0).sin().abs().powi(4);
+                let env = smooth(0.0, 0.15, t) * (1.0 - smooth(0.8, 1.0, t));
+                (0.0, pulse * env, Vec2::X, Vec2::splat(p.size * 2.0))
+            }
+            EmitKind::Meteor => {
+                let env = smooth(0.0, 0.12, t) * (1.0 - smooth(0.55, 1.0, t));
+                // Stretched along its travel: a streak with a hot core.
+                let dir = p.vel.normalize_or_zero();
+                (0.0, env, dir, Vec2::new(p.size * 9.0, p.size))
+            }
         };
         a *= slot.weight * fade_low * shade;
         if a <= 0.003 {
@@ -370,9 +440,13 @@ fn build_mesh(pos: &[[f32; 3]], uv: &[[f32; 2]], col: &[[f32; 4]], idx: &[u32]) 
 /// How much of a particle shows through the darkening behind the UI (matches background.wgsl).
 fn ui_shade(uv: Vec2) -> f32 {
     let srgb_alpha = |a: f32| 1.0 - (1.0 - a.clamp(0.0, 1.0)).powf(2.2);
-    let left = if uv.x > 0.32 { 0.55 * (1.0 - (uv.x - 0.32) / 0.30) } else { 0.92 + (0.55 - 0.92) * uv.x / 0.32 };
+    let left = if uv.x > 0.32 {
+        0.55 + (0.0 - 0.55) * smooth(0.32, 0.62, uv.x)
+    } else {
+        0.92 + (0.55 - 0.92) * smooth(0.0, 0.32, uv.x)
+    };
     let by = 1.0 - uv.y;
-    let bottom = if by > 0.26 { 0.85 * (1.0 - (by - 0.26) / 0.32) } else { 1.0 - 0.15 * by / 0.26 };
+    let bottom = 0.3 * (1.0 - smooth(0.0, 0.55, by));
     (1.0 - 0.9 * srgb_alpha(left)) * (1.0 - srgb_alpha(bottom))
 }
 

@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use super::input::{Device, NavInput};
-use super::state::{Dash, Library};
+use super::state::{Dash, Library, Mode};
 use super::textures::Textures;
 use super::theme::{CANVAS_H, SHELF_BOTTOM, SHELF_LEAD, SIDE, TILE_GAP, TILE_SEL_H, TILE_SEL_W, TILE_W};
 
@@ -84,6 +84,8 @@ pub struct Fx {
     /// The atmosphere on screen and how much of it is showing (fades between games).
     pub look: GameLook,
     pub look_amount: f32,
+    /// 0..1, racks the background out of focus while the guide or details sheet is open.
+    pub focus: f32,
     /// Parallax camera offset (drift + right stick / mouse + a push when navigating).
     pub cam: Vec2,
     push: Vec2,
@@ -174,6 +176,12 @@ pub fn update_fx(
     }
     fx.last = Some(key);
     fx.kick *= (-dt * 5.0).exp();
+
+    // Focus pull: overlays take the attention, the picture racks out behind them.
+    let want_focus = if matches!(dash.mode, Mode::Details | Mode::Guide) { 1.0 } else { 0.0 };
+    if (fx.focus - want_focus).abs() > 1e-4 {
+        fx.focus += (want_focus - fx.focus) * (1.0 - (-dt * 6.0).exp());
+    }
 
     if let Some(t) = fx.launch.as_mut() {
         *t += dt;

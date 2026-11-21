@@ -5,9 +5,6 @@ Rust with [Bevy](https://bevy.org). It finds your installed Steam games, native 
 emulated Xbox / Xbox 360 images, fetches artwork for them, and launches them from a controller
 or keyboard and mouse.
 
-The look is an original homage: own shader, colours and synthesised sounds, Windows' own
-Segoe UI fonts. No Microsoft assets are included.
-
 ## Install
 
 ```
@@ -117,15 +114,24 @@ aberration, lens distortion) applies to it while the UI stays sharp. Each game g
   background, where a little stretch of cloud or scenery goes unnoticed. Each game
   gets one motion style: *breathe* (near layers swell toward you), *glide* (a slow sideways
   parallax) or *push-in* (a very slow zoom into the subject), centred on the depth model's
-  focal point, with light swelling on near subjects
+  focal point, with light swelling on near subjects. Switching games **assembles the new
+  scene**: its near cards appear first and the backgrounds swap underneath, like the picture
+  arriving in layers
 - **effects that come out of the picture**: each hero is read for fire (hot, bright, glowing
   colours), small lights, a dark starry sky, water and tree canopies. Fire flickers and blooms
-  and sheds embers that rise off it; lights and stars twinkle and now and then flash a glint;
-  water gets a slow sheen and the odd glint; leaves drift down from the trees; dust hangs around
+  and sheds embers that rise off it, and the air above it ripples with heat; lights and stars
+  twinkle and now and then flash a glint, and a properly starry sky occasionally gets a
+  shooting star; water gets a slow sheen, crossing caustics and the odd glint; leaves drift
+  down from the trees, and dark foliage at night lights up with fireflies; dust hangs around
   lights. Particles are pinned to the depth card they came from, so they move with the image
 - its **own atmosphere**: light beams from the top corners, and, only for art with nothing of
   its own to animate, a light touch of dust, snow/ash, bokeh or sparks (or nothing), chosen from
   the game's id and colour
+- **focus pull**: while the details sheet or the guide is open, the background racks a little
+  out of focus and dims — the camera's attention moves to the overlay
+- **the picture lights the room**: the shelf's floor reflection and the floor under the tiles
+  are tinted from the hero's own lower edge, so the shelf is lit by whatever light is in the
+  art above it
 
 ### ML artwork enhancement
 
@@ -201,5 +207,5 @@ install.ps1        per-user install + Start Menu shortcut
 
 `cargo test` covers the VDF parser, wishlist URL/title parsing, exe picking on real folder layouts, title clean-up, artwork
 name matching, the launch/exit watcher, colour picking, depth estimation and rigid depth cards, scene analysis (fire vs. skin/roof
-tiles), the particle screen mapping and per-game looks. `cargo test dump_scene -- --ignored`
+tiles, fireflies vs. lit foliage), the particle screen mapping and per-game looks. `cargo test dump_scene -- --ignored`
 (with `GDASH_DEPTH_OUT` and `GDASH_DEPTH_IDS`) draws what the analysis found over each hero.

@@ -79,7 +79,14 @@ impl Textures {
                             let people = super::scene::subjects(seg.as_deref());
                             let cards = super::depth::layered(dw, dh, &d, people.as_deref());
                             let a = super::scene::analyse(*w, *h, px, dw, dh, &cards, seg.as_deref());
-                            Some(SceneData { w: dw, h: dh, cards, fxmap: a.fxmap, focal: Vec2::new(fx, fy), emitters: a.emitters })
+                            Some(SceneData {
+                                w: dw,
+                                h: dh,
+                                cards,
+                                fxmap: a.fxmap,
+                                focal: Vec2::new(fx, fy),
+                                emitters: a.emitters,
+                            })
                         }
                         _ => None,
                     };

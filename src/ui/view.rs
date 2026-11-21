@@ -458,6 +458,9 @@ pub fn spawn_static(
         Pickable::IGNORE,
     ));
 
+    // (The old "hero light on the floor" strip is gone: it read as a grey bar laid over the
+    // artwork. The picture now runs clean to the bottom edge in every view.)
+
     commands
         .spawn((
             Prompts,
@@ -1406,7 +1409,7 @@ pub fn update_background(
     let own = fade.b.as_ref().and_then(|x| x.scene.as_ref()).is_some_and(|s| !s.emitters.is_empty());
     let overlay = if own { 0.0 } else { l.style as f32 };
     mat.style = Vec4::new(overlay, fx.look_amount, l.seed, l.beam_tint);
-    mat.beams = Vec4::new(l.beams.x, l.beams.y, 0.0, 0.0);
+    mat.beams = Vec4::new(l.beams.x, l.beams.y, fx.focus, 0.0);
     let scene = |s: &Option<HeroSlot>| s.as_ref().and_then(|x| x.scene.clone());
     let (sca, scb) = (scene(&fade.a), scene(&fade.b));
     let da = sca.as_ref().map(|d| d.depth.clone()).unwrap_or_default();
@@ -1434,7 +1437,8 @@ pub fn update_background(
     mat.zoom = Vec4::new(ma.zoom, mb.zoom, physical.x, physical.y);
     mat.layout = Vec4::new(fill, 0.0, 0.0, 0.0);
 
-    // Tell the particles where each image is (current one last).
+    // Tell the particles where each image is (current one last). While an overlay holds the
+    // focus, the picture behind it is blurred and dim — its particles fade out too.
     layout.slots.clear();
     for (s, m, w) in [(&fade.a, &ma, has(&fade.a) * (1.0 - t)), (&fade.b, &mb, t)] {
         let Some(slot) = s else { continue };
@@ -1446,7 +1450,7 @@ pub fn update_background(
             focal: sc.focal,
             dolly: m.dolly,
             cam: m.cam,
-            weight: w,
+            weight: w * (1.0 - fx.focus),
             fill,
             emitters: sc.emitters.clone(),
         });

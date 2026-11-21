@@ -26,7 +26,7 @@ struct FragIn {
 @group(2) @binding(8) var<uniform> fx: vec4<f32>;        // x: launch flash, y: kick, zw: flash origin
 @group(2) @binding(9) var<uniform> look: vec4<f32>;      // xy: parallax camera, zw: has depth a/b
 @group(2) @binding(10) var<uniform> style: vec4<f32>;    // x: style, y: amount, z: seed, w: beam tint
-@group(2) @binding(11) var<uniform> beams: vec4<f32>;    // x: left, y: right
+@group(2) @binding(11) var<uniform> beams: vec4<f32>;    // x: left, y: right, z: focus pull, w: unused
 @group(2) @binding(12) var<uniform> breath: vec4<f32>;   // x/y: depth dolly a / b, z/w: relight a / b
 @group(2) @binding(13) var<uniform> focal: vec4<f32>;    // focal point a (xy), b (zw)
 @group(2) @binding(14) var depth_a: texture_2d<f32>;
@@ -123,8 +123,9 @@ fn sample_soft(t: texture_2d<f32>, s: sampler, uv: vec2<f32>, up: f32) -> vec3<f
 }
 
 // Hero colour (rgb) and nearness (a), displaced by depth against the parallax camera.
-// `up` is how many screen pixels each image pixel covers.
-fn hero_sample(t: texture_2d<f32>, s: sampler, dt: texture_2d<f32>, ds: sampler, ft: texture_2d<f32>, fs: sampler, uv0: vec2<f32>, has_depth: f32, up: f32, f: vec2<f32>, dolly: f32, cam: vec2<f32>, br: f32) -> vec4<f32> {
+// `up` is how many screen pixels each image pixel covers. `focus` racks the picture out of
+// focus while an overlay is open (0 sharp, 1 fully defocused).
+fn hero_sample(t: texture_2d<f32>, s: sampler, dt: texture_2d<f32>, ds: sampler, ft: texture_2d<f32>, fs: sampler, uv0: vec2<f32>, has_depth: f32, up: f32, f: vec2<f32>, dolly: f32, cam: vec2<f32>, br: f32, focus: f32) -> vec4<f32> {
     var uv = uv0 + cam * CAM_RIGID;
     var d = 0.5;
     if (has_depth > 0.0) {
@@ -142,11 +143,33 @@ fn hero_sample(t: texture_2d<f32>, s: sampler, dt: texture_2d<f32>, ds: sampler,
         // Clouds drift a touch: a tiny, slow, broad displacement inside the sky only.
         let drift = vec2<f32>(sin(uv.y * 9.0 + time * 0.21) * 0.0007, cos(uv.x * 7.0 + time * 0.17) * 0.0003);
         uv += drift * m.a;
+        // Heat shimmer: the air above a fire ripples. The mask is the fire a little below,
+        // the offset stays tiny, and the fxmap is blurred, so it never tears across the
+        // depth-card seams.
+        let heat = textureSampleLevel(ft, fs, vec2<f32>(uv.x, uv.y + 0.05), 0.0).r;
+        if (heat > 0.003) {
+            let w = time * 2.1;
+            uv += vec2<f32>(
+                sin(uv.y * 150.0 - w * 6.0 + sin(uv.x * 80.0) * 2.0),
+                0.5 * cos(uv.x * 120.0 - w * 8.0),
+            ) * 0.0013 * heat;
+        }
     }
     var c = sample_bicubic(t, s, uv);
     let soften = smoothstep(2.5, 4.5, up);
     if (soften > 0.0) {
         c = mix(c, sample_soft(t, s, uv, up), soften);
+    }
+    // Rack a little out of focus while an overlay is open: a small disc of taps, mixed in
+    // partway — a gentle softening, not a heavy bokeh.
+    if (focus > 0.0) {
+        let fr = 0.0026 * focus;
+        var blur = c;
+        for (var i = 0; i < 8; i++) {
+            let a = f32(i) * 0.7853982;
+            blur += textureSampleLevel(t, s, uv + vec2<f32>(cos(a), sin(a)) * fr, 0.0).rgb;
+        }
+        c = mix(c, blur / 9.0, focus * 0.75);
     }
     if (has_depth > 0.0) {
         // Fire flickers: only the flames' bright parts, and with no overall brightening, so
@@ -160,8 +183,12 @@ fn hero_sample(t: texture_2d<f32>, s: sampler, dt: texture_2d<f32>, ds: sampler,
         let lum = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
         let tw = sin(time * (1.6 + hash2(floor(uv * 300.0)).y * 2.0) + hash2(floor(uv * 300.0)).x * 6.283);
         c *= 1.0 + m.g * smoothstep(0.2, 0.6, lum) * (0.15 + 0.3 * tw);
-        // Water catches a slow, broad moving sheen.
+        // Water catches a slow, broad moving sheen...
         c *= 1.0 + m.b * 0.08 * max(sin(uv.x * 60.0 - time * 0.9 + sin(uv.y * 40.0 + time * 0.3) * 2.0), 0.0);
+        // ...and near water shimmers with crossing caustic bands.
+        let ca = sin(uv.x * 34.0 + sin(uv.y * 26.0 + time * 0.4) * 3.0 + time * 0.6);
+        let cb = sin(uv.x * 21.0 - uv.y * 33.0 - time * 0.45);
+        c *= 1.0 + m.b * 0.14 * pow(abs(ca + cb) * 0.5, 3.0) * (0.3 + 0.7 * d);
     }
     // Light breathes onto the subject: near parts brighten slightly, far parts recede.
     if (has_depth > 0.0) {
@@ -297,12 +324,17 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
     var col = ambient;
     var near = 0.0;
     var has_hero = 0.0;
+    // Focus pull: while the guide or details sheet is open, the picture racks out of focus.
+    let focus = beams.z;
     if (params.z > 0.0) {
         let huv = hero_uv(uv, screen, sizes.xy, zoom.x, focal.xy);
         let m = hero_mask(huv);
         if (m > 0.0) {
-            let h = hero_sample(hero_a, hero_a_s, depth_a, depth_a_s, fxmap_a, fxmap_a_s, huv, look.z, magnification(screen, sizes.xy, zoom.x, focal.xy), focal.xy, breath.x, motion.xy, breath.z);
-            let w = params.z * (1.0 - params.y) * m;
+            let h = hero_sample(hero_a, hero_a_s, depth_a, depth_a_s, fxmap_a, fxmap_a_s, huv, look.z, magnification(screen, sizes.xy, zoom.x, focal.xy), focal.xy, breath.x, motion.xy * (1.0 - 0.6 * focus), breath.z, focus);
+            // Depth-staggered: the outgoing subject steps aside before its background does,
+            // so the old scene dissolves from the front.
+            let gate = smoothstep(0.0, 1.0, 1.7 * (1.0 - params.y) - 0.35 * (1.0 - h.a));
+            let w = params.z * (1.0 - params.y) * m * gate;
             col = mix(col, h.rgb, w);
             near = mix(near, h.a, w);
             has_hero = max(has_hero, w);
@@ -312,8 +344,10 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
         let huv = hero_uv(uv, screen, sizes.zw, zoom.y, focal.zw);
         let m = hero_mask(huv);
         if (m > 0.0) {
-            let h = hero_sample(hero_b, hero_b_s, depth_b, depth_b_s, fxmap_b, fxmap_b_s, huv, look.w, magnification(screen, sizes.zw, zoom.y, focal.zw), focal.zw, breath.y, motion.zw, breath.w);
-            let w = params.w * params.y * m;
+            let h = hero_sample(hero_b, hero_b_s, depth_b, depth_b_s, fxmap_b, fxmap_b_s, huv, look.w, magnification(screen, sizes.zw, zoom.y, focal.zw), focal.zw, breath.y, motion.zw * (1.0 - 0.6 * focus), breath.w, focus);
+            // The new scene assembles: near cards materialize first, the background fills in.
+            let gate = smoothstep(0.0, 1.0, 1.7 * params.y - 0.35 * (1.0 - h.a));
+            let w = params.w * params.y * m * gate;
             col = mix(col, h.rgb, w);
             near = mix(near, h.a, w);
             has_hero = max(has_hero, w);
@@ -321,25 +355,37 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
     }
     // Atmospheric perspective: far parts take on a little of the scene's colour.
     col = mix(col, light * 0.12 + col * 0.8, (1.0 - near) * 0.25 * has_hero);
+    // An open overlay gets the attention: the picture dims a touch behind it.
+    col *= 1.0 - 0.22 * focus;
 
-    // Shade only where the UI sits: left (info), bottom (shelf), top (tabs).
-    let left_s = clamp(select(mix(0.92, 0.55, uv.x / 0.32), mix(0.55, 0.0, (uv.x - 0.32) / 0.30), uv.x > 0.32), 0.0, 1.0);
+    // Shade only where the UI sits: left (info), bottom (prompts), top (tabs). Smooth curves
+    // with no hard edges, and only a soft pool of darkness at the very bottom, so the art
+    // reads all the way down instead of being cut off by a band.
+    let left_s = select(
+        mix(0.92, 0.55, smoothstep(0.0, 0.32, uv.x)),
+        mix(0.55, 0.0, smoothstep(0.32, 0.62, uv.x)),
+        uv.x > 0.32,
+    );
     let by = 1.0 - uv.y;
-    let bottom_s = clamp(select(mix(1.0, 0.85, by / 0.26), mix(0.85, 0.0, (by - 0.26) / 0.32), by > 0.26), 0.0, 1.0);
-    let top_s = clamp(mix(0.7, 0.0, uv.y / 0.18), 0.0, 1.0);
+    let bottom_s = 0.3 * (1.0 - smoothstep(0.0, 0.55, by));
+    let top_s = 0.7 * (1.0 - smoothstep(0.0, 0.18, uv.y));
     // Gradients are specified like CSS (sRGB alpha); convert to equivalent linear-space
     // coverage so the darkening looks as strong as designed.
     // (The grid darkens evenly on its own instead.)
+    // Grid mode dims evenly (below) but still borrows the soft pools at the very top and
+    // bottom, so the header and the prompts keep a whisper of contrast — no more.
     let ui = 1.0 - backdrop.x;
+    let pool = max(ui, 0.2 * backdrop.x);
     col = mix(col, INK, srgb_alpha(left_s) * ui);
-    col = mix(col, INK, srgb_alpha(bottom_s) * ui);
-    col = mix(col, INK, srgb_alpha(top_s) * ui);
+    col = mix(col, INK, srgb_alpha(bottom_s) * pool);
+    col = mix(col, INK, srgb_alpha(top_s) * pool);
 
     // Gentle vignette.
     let v = smoothstep(1.3, 0.4, length((uv - 0.5) * vec2<f32>(1.2, 1.0)));
     col *= mix(0.7, 1.0, v);
-    // The grid's backdrop is dimmed here, before bloom, so it stays deep instead of hazy.
-    col *= 1.0 - 0.6 * backdrop.x;
+    // The grid's backdrop stays art, not a grey wash: a light even dim, with the soft
+    // pools above doing the contrast work.
+    col *= 1.0 - 0.5 * backdrop.x;
 
     let amount = style.y;
     // Light beams from the top corners; foreground subjects block some of them.
@@ -352,7 +398,7 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
         b += corner_beams(uv, aspect, t, fract(seed + 0.37), true) * beams.y;
     }
     b *= (1.0 - 0.6 * near * has_hero) * (1.0 - 0.7 * srgb_alpha(bottom_s)) * (1.0 - 0.35 * srgb_alpha(left_s)) * (1.0 + 0.6 * fx.y);
-    col += beam_col * b * 0.3 * amount;
+    col += beam_col * b * 0.3 * amount * (1.0 - 0.6 * focus);
 
     // Atmosphere particles, kept sparse and soft.
     let kind = i32(style.x + 0.5);
@@ -362,7 +408,7 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
         if (kind == 5) { pc = mix(light, vec3<f32>(1.0, 0.7, 0.35), 0.5); }
         if (kind == 4) { pc = mix(light, vec3<f32>(1.0), 0.25); }
         if (kind == 2) { pc = mix(light, vec3<f32>(0.9, 0.93, 1.0), 0.7); }
-        col += pc * p * amount * (1.0 - 0.75 * srgb_alpha(left_s));
+        col += pc * p * amount * (1.0 - 0.7 * focus) * (1.0 - 0.75 * srgb_alpha(left_s));
     }
 
     // Launch: a burst of light from the selected cover that bloom blows out.

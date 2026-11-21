@@ -24,10 +24,10 @@ is 1600 × 900 canvas px. The side margin is 72.
 1. **Background shader**
    - The hero image is cover-fit, biased toward the top, and cross-fades over 0.8 s.
    - A slow 1.00 → 1.04 zoom runs over 12 s after each change.
-   - Shade gradients, multiplied toward `#030508`:
+   - Shade gradients, multiplied toward `#030508` (smooth curves, no hard edges):
      - left: 92% at x = 0, 55% at 32%, 0 at 62%
-     - bottom: 100% at the bottom edge, 85% at 26%, 0 at 58%
-     - top: 70% at the top edge, 0 at 18%
+     - bottom: 30% at the bottom edge, easing smoothly to 0 at 55%
+     - top: 70% at the top edge, easing smoothly to 0 at 18%
    - Without a hero, the background is dark ambient light ribbons tinted with the accent.
 2. **Top bar** (top 34)
    - The orb, then an `LB` key cap.

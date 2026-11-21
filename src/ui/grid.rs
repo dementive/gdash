@@ -79,7 +79,9 @@ pub fn spawn(commands: &mut Commands) {
                 left: px(SIDE),
                 right: px(SIDE),
                 top: px(100),
-                height: px(GRID_TOP - 100.0 - 6.0),
+                // Keeps clear of the top bar above and, below, of the first card row —
+                // the selected card lifts 10px and its glow reaches a little further.
+                height: px(GRID_TOP - 100.0 - 22.0),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::FlexEnd,
                 display: Display::None,
@@ -91,7 +93,8 @@ pub fn spawn(commands: &mut Commands) {
         .with_children(|h| {
             h.spawn((Node { flex_direction: FlexDirection::Column, row_gap: px(4), flex_grow: 1.0, ..default() }, Pickable::IGNORE))
                 .with_children(|c| {
-                    c.spawn((GridText::Title, Text::new(""), theme::font(32.0, FontWeight::SEMIBOLD), TextColor(WHITE), Pickable::IGNORE));
+                    // One line only: a wrapped title would climb into the tab bar above.
+                    c.spawn((GridText::Title, Text::new(""), TextLayout::no_wrap(), theme::font(32.0, FontWeight::SEMIBOLD), TextColor(WHITE), Pickable::IGNORE));
                     c.spawn((
                         GridText::Meta,
                         Text::new(""),
@@ -188,9 +191,9 @@ pub fn sync_grid(
                 },
                 BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.22)),
                 Outline { width: px(2.5), offset: px(0), color: Color::NONE },
-                BoxShadow(vec![shadow(Color::NONE, 0.0, 22.0, 0.0), shadow(Color::srgba(0.0, 0.0, 0.0, 0.55), 10.0, 22.0, 0.0)]),
+                BoxShadow(vec![shadow(Color::NONE, 0.0, 18.0, 0.0), shadow(Color::srgba(0.0, 0.0, 0.0, 0.55), 10.0, 22.0, 0.0)]),
                 // See-through behind the art, so the backdrop glows through the cards.
-                BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.55)),
+                BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.35)),
                 UiTransform::default(),
                 GlobalZIndex(7),
             ))
@@ -208,7 +211,8 @@ pub fn sync_grid(
                         border_radius: BorderRadius::all(px(CARD_R * 0.8)),
                         ..default()
                     },
-                    BackgroundColor(darken(base, 0.7)),
+                    // Translucent tint so the backdrop shows through fallback cards too.
+                    BackgroundColor(theme::alpha(darken(base, 0.7), 0.55)),
                     Pickable::IGNORE,
                 ))
                 .with_children(|f| {
@@ -353,8 +357,7 @@ pub fn animate_grid(
         set_display(&mut node, in_view(t.idx));
         set_px(&mut node, |n| &mut n.left, x.round());
         set_px(&mut node, |n| &mut n.top, y.round());
-        let s = t.sel;
-        let sc = s.clamp(0.0, 1.0);
+        let sc = t.sel.clamp(0.0, 1.0);
         let col = super::theme::alpha(ring, sc);
         if outline.color != col {
             outline.color = col;
@@ -371,14 +374,12 @@ pub fn animate_grid(
             shadows.0[1].y_offset = px(10.0 + 18.0 * sc);
             shadows.0[1].blur_radius = px(22.0 + 24.0 * sc);
         }
-        let near = if t.idx == sel { 0.0 } else { (-dist(t.idx) * 1.1).exp() };
         let e = ease(t.appear);
-        // Cards float over the backdrop: they drift a little with the camera, the selected
-        // one (nearest to you) the most.
-        let float = fx.cam * (2.0 + 8.0 * sc);
+        // Only the selected card moves: it lifts straight up on its spring (overshooting
+        // a touch, then settling back down). Every other card stays perfectly still.
         let want_tf = UiTransform {
-            translation: Val2::px(float.x, (1.0 - e) * 24.0 - 8.0 * sc + float.y),
-            scale: Vec2::splat(1.0 + 0.12 * s + 0.035 * near + 0.06 * flare),
+            translation: Val2::px(0.0, (1.0 - e) * 24.0 - 10.0 * sc),
+            scale: Vec2::splat(1.0),
             ..default()
         };
         if *tf != want_tf {
@@ -402,9 +403,9 @@ pub fn animate_grid(
                 if img.image != h {
                     img.image = h;
                 }
-                // Glassy: the art is slightly see-through until selected.
+                // Glassy: the art is a little see-through until selected.
                 let s = state.iter().find(|x| x.0 == gi.0).map(|x| x.1.clamp(0.0, 1.0)).unwrap_or(0.0);
-                let c = Color::srgba(1.0, 1.0, 1.0, 0.9 + 0.1 * s);
+                let c = Color::srgba(1.0, 1.0, 1.0, 0.85 + 0.15 * s);
                 if img.color != c {
                     img.color = c;
                 }
@@ -421,8 +422,9 @@ pub fn animate_grid(
     }
     for (d, mut bg) in &mut dims {
         let (s, appear) = state.iter().find(|x| x.0 == d.0).map(|x| (x.1.clamp(0.0, 1.0), ease(x.2))).unwrap_or((0.0, 1.0));
-        // Far from the selection, cards step back a little more.
-        let a = ((0.16 + 0.22 * (dist(d.0) / 4.0).min(1.0)) * (1.0 - s)).max(1.0 - appear);
+        // Far from the selection, cards step back a touch — but only a touch, so the
+        // backdrop still reads through every card.
+        let a = ((0.10 + 0.16 * (dist(d.0) / 4.0).min(1.0)) * (1.0 - s)).max(1.0 - appear);
         set_color(&mut bg, BackgroundColor(Color::srgba(0.01, 0.015, 0.025, a)));
     }
 
@@ -474,7 +476,7 @@ pub fn toggle_views(
     }
     if let Ok((mut n, mut bg)) = shade.single_mut() {
         set_display(&mut n, on);
-        set_color(&mut bg, BackgroundColor(Color::srgba(0.01, 0.015, 0.025, 0.25 * anim.shown)));
+        set_color(&mut bg, BackgroundColor(Color::srgba(0.01, 0.015, 0.025, 0.12 * anim.shown)));
     }
 }
 
