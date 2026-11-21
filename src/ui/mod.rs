@@ -3,10 +3,12 @@
 mod background;
 mod depth;
 mod fx;
+mod glass;
 mod grid;
 mod input;
 mod launch;
 mod particles;
+mod procedural;
 mod scene;
 mod sound;
 mod state;
@@ -121,6 +123,7 @@ pub fn run(opts: Options, cfg: Config) {
         );
     background::register(&mut app);
     particles::register(&mut app);
+    glass::register(&mut app);
 
     app.insert_resource(Library { games: games.clone(), wishlist })
         .insert_resource(dash)
@@ -158,6 +161,7 @@ pub fn run(opts: Options, cfg: Config) {
                 view::update_background,
                 particles::update_particles,
                 view::update_chrome,
+                (glass::update_glass, glass::animate_cards),
                 view::animate_prompts,
                 textures::pump_textures,
             )

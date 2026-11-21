@@ -7,7 +7,8 @@ use bevy::text::FontWeight;
 use bevy::ui::{BackgroundGradient, ColorStop, LinearGradient, UiScale};
 use bevy::window::PrimaryWindow;
 
-use super::fx::Fx;
+use super::fx::{self, Fx};
+use super::glass::ShimmerMaterial;
 use super::state::{BladeKey, Dash, Library};
 use super::textures::Textures;
 use super::theme::{self, *};
@@ -41,6 +42,9 @@ pub struct GridTile {
 pub struct GridImage(usize);
 #[derive(Component)]
 pub struct GridFallback(usize);
+/// A light sweep while this card's artwork is still arriving.
+#[derive(Component)]
+pub struct GridLoading(usize);
 #[derive(Component)]
 pub struct GridDim(usize);
 
@@ -51,6 +55,9 @@ pub struct GridAnim {
     scroll: f32,
     /// How much the grid view is showing (0..1).
     shown: f32,
+    /// The selection the header is showing, and its slide-in progress.
+    key: Option<(usize, u64)>,
+    t: f32,
 }
 
 /// Room above the first row inside the clipped layer, so a selected card's pop and glow
@@ -87,6 +94,7 @@ pub fn spawn(commands: &mut Commands) {
                 display: Display::None,
                 ..default()
             },
+            UiTransform::default(),
             GlobalZIndex(6),
             Pickable::IGNORE,
         ))
@@ -149,6 +157,7 @@ pub fn sync_grid(
     mut commands: Commands,
     dash: Res<Dash>,
     lib: Res<Library>,
+    mut shimmer_mats: ResMut<Assets<ShimmerMaterial>>,
     layer: Query<Entity, With<GridLayer>>,
     mut anim: ResMut<GridAnim>,
     mut last: Local<Option<(usize, u64)>>,
@@ -211,8 +220,9 @@ pub fn sync_grid(
                         border_radius: BorderRadius::all(px(CARD_R * 0.8)),
                         ..default()
                     },
-                    // Translucent tint so the backdrop shows through fallback cards too.
-                    BackgroundColor(theme::alpha(darken(base, 0.7), 0.55)),
+                    // Translucent tint so the backdrop — or the generated cover — shows
+                    // through fallback cards too.
+                    BackgroundColor(theme::alpha(darken(base, 0.7), 0.40)),
                     Pickable::IGNORE,
                 ))
                 .with_children(|f| {
@@ -231,6 +241,24 @@ pub fn sync_grid(
                     },
                     Pickable::IGNORE,
                 ));
+                if let Some(g) = game {
+                    // A light sweep while the cover is still on its way.
+                    t.spawn((
+                        GridLoading(i),
+                        MaterialNode(shimmer_mats.add(ShimmerMaterial {
+                            params: Vec4::new((fx::hash(&g.id) % 4096) as f32 / 4096.0, 0.0, 0.0, 0.0),
+                        })),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: percent(100),
+                            height: percent(100),
+                            border_radius: BorderRadius::all(px(CARD_R * 0.8)),
+                            display: Display::None,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                }
                 // Glass sheen across the top, shade toward the bottom: reads as a raised card.
                 t.spawn((
                     Node {
@@ -282,9 +310,22 @@ pub fn animate_grid(
     mut tiles: Query<(&mut GridTile, &mut Node, &mut Outline, &mut BoxShadow, &mut UiTransform, &mut GlobalZIndex)>,
     mut images: Query<(&GridImage, &mut ImageNode, &mut Node), Without<GridTile>>,
     mut fallbacks: Query<(&GridFallback, &mut Node), (Without<GridTile>, Without<GridImage>)>,
+    mut shimmers: Query<
+        (&GridLoading, &mut Node),
+        (Without<GridTile>, Without<GridImage>, Without<GridFallback>, Without<GridHeader>),
+    >,
     mut dims: Query<(&GridDim, &mut BackgroundColor)>,
     mut texts: Query<(&GridText, &mut Text, &mut TextColor)>,
-    mut header: Query<&mut Node, (With<GridHeader>, Without<GridTile>, Without<GridImage>, Without<GridFallback>)>,
+    mut header: Query<
+        (&mut Node, &mut UiTransform),
+        (
+            With<GridHeader>,
+            Without<GridTile>,
+            Without<GridImage>,
+            Without<GridFallback>,
+            Without<GridLoading>,
+        ),
+    >,
 ) {
     let dt = time.delta_secs().min(1.0 / 20.0);
     let size = canvas(&windows, &scale);
@@ -315,10 +356,22 @@ pub fn animate_grid(
 
     let width = cols as f32 * GRID_W + (cols - 1) as f32 * GRID_GAP;
     let x0 = ((size.x - width) / 2.0).round();
-    // The header lines up with the grid's edges.
-    if let Ok(mut h) = header.single_mut() {
+    // The header lines up with the grid's edges, and its text slides in from the left
+    // whenever the selection moves — the info block's gesture, at grid scale.
+    if let Ok((mut h, mut tf)) = header.single_mut() {
         set_px(&mut h, |n| &mut n.left, x0);
         set_px(&mut h, |n| &mut n.right, x0);
+        let key = (sel, dash.content_gen);
+        if anim.key != Some(key) {
+            anim.key = Some(key);
+            anim.t = 0.0;
+        }
+        anim.t = (anim.t + dt * 4.0).min(1.0);
+        let e = ease(anim.t);
+        let want = UiTransform { translation: Val2::px(-12.0 * (1.0 - e), 0.0), ..default() };
+        if *tf != want {
+            *tf = want;
+        }
     }
     let accent = fx.accent_color();
     let ring = Color::from(accent.to_srgba().mix(&Srgba::WHITE, 0.35));
@@ -393,6 +446,7 @@ pub fn animate_grid(
     }
 
     let mut missing = Vec::new();
+    let mut loading = Vec::new();
     for (gi, mut img, mut node) in &mut images {
         if !in_view(gi.0) {
             continue;
@@ -413,12 +467,31 @@ pub fn animate_grid(
             }
             None => {
                 set_display(&mut node, false);
-                missing.push(gi.0);
+                if tex.is_missing(&game.id, ArtKind::Cover) {
+                    missing.push(gi.0);
+                    // No art anywhere: the generated cover, tinted like real art.
+                    if let Some(fb) = tex.fallback(&game.id, super::view::system_color(game.system)) {
+                        if img.image != fb {
+                            img.image = fb;
+                        }
+                        let s = state.iter().find(|x| x.0 == gi.0).map(|x| x.1.clamp(0.0, 1.0)).unwrap_or(0.0);
+                        let c = Color::srgba(1.0, 1.0, 1.0, 0.85 + 0.15 * s);
+                        if img.color != c {
+                            img.color = c;
+                        }
+                        set_display(&mut node, true);
+                    }
+                } else {
+                    loading.push(gi.0);
+                }
             }
         }
     }
     for (f, mut node) in &mut fallbacks {
-        set_display(&mut node, missing.contains(&f.0));
+        set_display(&mut node, missing.contains(&f.0) || loading.contains(&f.0));
+    }
+    for (s, mut node) in &mut shimmers {
+        set_display(&mut node, loading.contains(&s.0));
     }
     for (d, mut bg) in &mut dims {
         let (s, appear) = state.iter().find(|x| x.0 == d.0).map(|x| (x.1.clamp(0.0, 1.0), ease(x.2))).unwrap_or((0.0, 1.0));
@@ -443,7 +516,7 @@ pub fn animate_grid(
         })
         .unwrap_or_default();
     let count = if n == 0 { String::new() } else { format!("{} / {}", sel + 1, n) };
-    let a = anim.shown;
+    let a = anim.shown * ease(anim.t);
     for (k, mut text, mut color) in &mut texts {
         let (s, alpha_max) = match k {
             GridText::Title => (&title, 1.0),

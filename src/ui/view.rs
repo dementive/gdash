@@ -10,7 +10,8 @@ use bevy::window::PrimaryWindow;
 use bevy::sprite_render::MeshMaterial2d;
 
 use super::background::{BgMaterial, HeroFade, HeroSlot};
-use super::fx::Fx;
+use super::fx::{self, Fx};
+use super::glass::{Glass, GlassCard, ShimmerMaterial};
 use super::input::{Device, NavInput, PadEvent};
 use super::state::{Action, BladeKey, Dash, Entry, GUIDE_ITEMS, Library, Mode};
 use super::textures::Textures;
@@ -76,6 +77,9 @@ pub struct ForDevice(Device);
 pub struct TileImage(pub usize);
 #[derive(Component)]
 pub struct TileFallback(pub usize);
+/// A light sweep while this tile's artwork is still arriving.
+#[derive(Component)]
+pub struct TileLoading(pub usize);
 #[derive(Component)]
 pub struct TileDim(pub usize);
 #[derive(Component)]
@@ -393,37 +397,52 @@ pub fn spawn_static(
     mut commands: Commands,
     mut mats: ResMut<Assets<BgMaterial>>,
     mut pmats: ResMut<Assets<super::particles::ParticleMaterial>>,
+    mut glass_mats: ResMut<Assets<super::glass::GlassMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    commands.spawn(super::fx::camera());
+    // A second camera exists for the glass overlays, so say which one owns the UI.
+    commands.spawn((super::fx::camera(), IsDefaultUiCamera));
     super::particles::spawn(&mut commands, &mut meshes, &mut pmats);
 
-    // The background lives in the world so the camera's HDR post effects apply to it.
+    // One quad, two draws: full size on the main camera, and a quarter-size copy for
+    // the glass overlays to sample — the same material, so they never drift apart.
+    let mesh = meshes.add(Rectangle::new(1.0, 1.0));
+    let bg = mats.add(BgMaterial {
+        tint: Vec4::ZERO,
+        params: Vec4::ZERO,
+        sizes: Vec4::ONE,
+        zoom: Vec4::ONE,
+        hero_a: Handle::default(),
+        hero_b: Handle::default(),
+        fx: Vec4::ZERO,
+        look: Vec4::ZERO,
+        style: Vec4::ZERO,
+        beams: Vec4::ZERO,
+        breath: Vec4::ZERO,
+        focal: Vec4::splat(0.5),
+        depth_a: Handle::default(),
+        depth_b: Handle::default(),
+        motion: Vec4::ZERO,
+        fxmap_a: Handle::default(),
+        fxmap_b: Handle::default(),
+        layout: Vec4::ZERO,
+    });
     commands.spawn((
         BgNode,
-        Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
-        MeshMaterial2d(mats.add(BgMaterial {
-            tint: Vec4::ZERO,
-            params: Vec4::ZERO,
-            sizes: Vec4::ONE,
-            zoom: Vec4::ONE,
-            hero_a: Handle::default(),
-            hero_b: Handle::default(),
-            fx: Vec4::ZERO,
-            look: Vec4::ZERO,
-            style: Vec4::ZERO,
-            beams: Vec4::ZERO,
-            breath: Vec4::ZERO,
-            focal: Vec4::splat(0.5),
-            depth_a: Handle::default(),
-            depth_b: Handle::default(),
-            motion: Vec4::ZERO,
-            fxmap_a: Handle::default(),
-            fxmap_b: Handle::default(),
-            layout: Vec4::ZERO,
-        })),
+        Mesh2d(mesh.clone()),
+        MeshMaterial2d(bg.clone()),
         Transform::from_scale(Vec3::new(1600.0, 900.0, 1.0)),
     ));
+    let glass = super::glass::spawn(
+        &mut commands,
+        &mut images,
+        &mut glass_mats,
+        bg,
+        mesh,
+        windows.single().ok(),
+    );
 
     spawn_top_bar(&mut commands);
     spawn_info(&mut commands);
@@ -485,7 +504,8 @@ pub fn spawn_static(
         });
 
     super::grid::spawn(&mut commands);
-    spawn_overlays(&mut commands);
+    spawn_overlays(&mut commands, &glass);
+    commands.insert_resource(glass);
 
     commands.spawn((
         Fader,
@@ -622,8 +642,9 @@ fn spawn_info(commands: &mut Commands) {
         });
 }
 
-fn glass_card(width: f32) -> impl Bundle {
+fn glass_card(width: f32, glass: &Glass) -> impl Bundle {
     (
+        GlassCard,
         Node {
             width: px(width),
             flex_direction: FlexDirection::Column,
@@ -633,13 +654,14 @@ fn glass_card(width: f32) -> impl Bundle {
             border: UiRect::all(px(1)),
             ..default()
         },
-        grad(LinearGradient::TO_BOTTOM, Color::srgb(0.13, 0.16, 0.21), Color::srgb(0.04, 0.05, 0.07)),
-        BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.10)),
-        BoxShadow(vec![shadow(Color::srgba(0.0, 0.0, 0.0, 0.6), 30.0, 80.0, 0.0)]),
+        // The blurred, saturated backdrop copy shines through (see glass.rs).
+        MaterialNode(glass.mat.clone()),
+        BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+        BoxShadow(vec![shadow(Color::srgba(0.0, 0.0, 0.0, 0.55), 30.0, 80.0, 0.0)]),
     )
 }
 
-fn spawn_overlays(commands: &mut Commands) {
+fn spawn_overlays(commands: &mut Commands, glass: &Glass) {
     // Details sheet (right side).
     commands
         .spawn((
@@ -654,11 +676,12 @@ fn spawn_overlays(commands: &mut Commands) {
                 display: Display::None,
                 ..default()
             },
-            grad(LinearGradient::TO_RIGHT, Color::srgba(0.0, 0.0, 0.0, 0.35), Color::srgba(0.0, 0.0, 0.0, 0.92)),
+            // The pane itself is glass now, so the scrim only has to guide the eye.
+            grad(LinearGradient::TO_RIGHT, Color::srgba(0.0, 0.0, 0.0, 0.22), Color::srgba(0.0, 0.0, 0.0, 0.72)),
             GlobalZIndex(40),
         ))
         .with_children(|o| {
-            o.spawn(glass_card(560.0)).with_children(|c| {
+            o.spawn(glass_card(560.0, glass)).with_children(|c| {
                 c.spawn((Slot::DetTitle, Text::new(""), theme::font(30.0, FontWeight::SEMIBOLD), TextColor(WHITE)));
                 c.spawn((
                     Slot::DetBody,
@@ -687,11 +710,11 @@ fn spawn_overlays(commands: &mut Commands) {
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.60)),
             GlobalZIndex(50),
         ))
         .with_children(|o| {
-            o.spawn(glass_card(500.0)).with_children(|p| {
+            o.spawn(glass_card(500.0, glass)).with_children(|p| {
                 p.spawn(Node { column_gap: px(14), align_items: AlignItems::Center, margin: UiRect::bottom(px(14)), ..default() })
                     .with_children(|h| {
                         orb(h, 34.0);
@@ -858,6 +881,7 @@ pub fn sync_shelf(
     mut commands: Commands,
     dash: Res<Dash>,
     lib: Res<Library>,
+    mut shimmer_mats: ResMut<Assets<ShimmerMaterial>>,
     layer: Query<Entity, With<ShelfLayer>>,
     mut anim: ResMut<ShelfAnim>,
     mut last: Local<Option<(usize, u64)>>,
@@ -908,8 +932,8 @@ pub fn sync_shelf(
                     GlobalZIndex(6),
                 ))
                 .with_children(|t| {
-                    // Fallback card: system entries (icon) or games without box art (title).
-                    let base = game.map(|g| system_color(g.system)).unwrap_or(blade.color);
+                    // Fallback card: system entries (icon), games still loading, and games
+                    // whose generated cover is on its way (title over a scrim).
                     t.spawn((
                         TileFallback(i),
                         Node {
@@ -926,7 +950,17 @@ pub fn sync_shelf(
                             ..default()
                         },
                         if game.is_some() {
-                            grad(LinearGradient::TO_BOTTOM, darken(base, 0.35), darken(base, 0.85))
+                            // Transparent except the title's scrim: whatever art the
+                            // tile has (real or generated) shows through.
+                            BackgroundGradient::from(LinearGradient {
+                                angle: LinearGradient::TO_BOTTOM,
+                                stops: vec![
+                                    ColorStop::new(Color::srgba(0.0, 0.0, 0.0, 0.0), percent(0)),
+                                    ColorStop::new(Color::srgba(0.0, 0.0, 0.0, 0.0), percent(55)),
+                                    ColorStop::new(Color::srgba(0.0, 0.0, 0.0, 0.55), percent(100)),
+                                ],
+                                ..default()
+                            })
                         } else {
                             grad(LinearGradient::TO_BOTTOM, Color::srgba(0.22, 0.26, 0.32, 0.85), Color::srgba(0.08, 0.10, 0.13, 0.9))
                         },
@@ -944,10 +978,31 @@ pub fn sync_shelf(
                             Pickable::IGNORE,
                         ));
                     });
-                    if game.is_some() {
+                    if let Some(g) = game {
                         t.spawn((
                             TileImage(i),
                             ImageNode::default(),
+                            Node {
+                                position_type: PositionType::Absolute,
+                                width: percent(100),
+                                height: percent(100),
+                                border_radius: BorderRadius::all(px(CARD_R)),
+                                display: Display::None,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                        // A light sweep while the cover is still on its way.
+                        t.spawn((
+                            TileLoading(i),
+                            MaterialNode(shimmer_mats.add(ShimmerMaterial {
+                                params: Vec4::new(
+                                    (fx::hash(&g.id) % 4096) as f32 / 4096.0,
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                ),
+                            })),
                             Node {
                                 position_type: PositionType::Absolute,
                                 width: percent(100),
@@ -1060,6 +1115,10 @@ pub fn animate_shelf(
     mut tiles: Query<(&mut Tile, &mut Node, &mut Outline, &mut BoxShadow, &mut UiTransform)>,
     mut images: Query<(&TileImage, &mut ImageNode, &mut Node), Without<Tile>>,
     mut fallbacks: Query<(&TileFallback, &mut Node), (Without<Tile>, Without<TileImage>)>,
+    mut shimmers: Query<
+        (&TileLoading, &mut Node),
+        (Without<Tile>, Without<TileImage>, Without<TileFallback>, Without<TileReflection>),
+    >,
     mut dims: Query<(&TileDim, &mut BackgroundColor)>,
     mut refls: Query<
         (&TileReflection, &mut Node),
@@ -1130,9 +1189,12 @@ pub fn animate_shelf(
         }
         let e = ease(t.appear);
         let pop = 1.0 + 0.10 * flare;
+        // The row leans into the move and rights itself as the scroll settles.
+        let lag = target - anim.scroll;
         let want = UiTransform {
             translation: Val2::px(0.0, (1.0 - e) * 60.0 - 14.0 * flare),
             scale: Vec2::splat(pop),
+            rotation: Rot2::radians(0.040 * (lag / 130.0).tanh()),
             ..default()
         };
         if *tf != want {
@@ -1140,8 +1202,9 @@ pub fn animate_shelf(
         }
     }
 
-    // Box art, fallbacks, dimming and reflections.
+    // Box art, generated covers, shimmer, dimming and reflections.
     let mut missing = Vec::new();
+    let mut loading = Vec::new();
     let mut covers: Vec<(usize, Handle<Image>, UVec2)> = Vec::new();
     for (ti, mut img, mut node) in &mut images {
         let Some(game) = blade.entries.get(ti.0).and_then(|e| game_of(&lib, e)) else { continue };
@@ -1162,13 +1225,31 @@ pub fn animate_shelf(
                 set_display(&mut node, false);
                 if tex.is_missing(&game.id, ArtKind::Cover) {
                     missing.push(ti.0);
+                    // No art anywhere: show the generated cover (procedural.rs), so the
+                    // tile is still a piece of the library, reflection included.
+                    if let Some(fb) = tex.fallback(&game.id, system_color(game.system)) {
+                        if img.image != fb {
+                            img.image = fb.clone();
+                        }
+                        let c = Color::srgba(1.0, 1.0, 1.0, fade);
+                        if img.color != c {
+                            img.color = c;
+                        }
+                        set_display(&mut node, true);
+                        covers.push((ti.0, fb, UVec2::new(super::procedural::W, super::procedural::H)));
+                    }
+                } else {
+                    loading.push(ti.0);
                 }
             }
         }
     }
     for (f, mut node) in &mut fallbacks {
         let is_game = blade.entries.get(f.0).and_then(|e| game_of(&lib, e)).is_some();
-        set_display(&mut node, !is_game || missing.contains(&f.0));
+        set_display(&mut node, !is_game || missing.contains(&f.0) || loading.contains(&f.0));
+    }
+    for (s, mut node) in &mut shimmers {
+        set_display(&mut node, loading.contains(&s.0));
     }
     for (d, mut bg) in &mut dims {
         let (s, fade) = lookup(d.0).map(|k| (state[k].1.clamp(0.0, 1.0), ease(state[k].2))).unwrap_or((0.0, 1.0));

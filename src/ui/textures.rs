@@ -11,6 +11,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use super::background::HeroScene;
 use super::scene::Emitter;
 use crate::art::{self, ArtKind};
+use super::procedural;
 
 type Key = (String, ArtKind);
 
@@ -18,6 +19,17 @@ enum Entry {
     Loading,
     Ready { handle: Handle<Image>, size: UVec2, last_used: f64 },
     Missing,
+}
+
+/// A generated cover request for the background thread.
+struct FbReq {
+    id: String,
+    accent: Color,
+}
+
+enum FbEntry {
+    Loading,
+    Ready { handle: Handle<Image> },
 }
 
 struct Loaded {
@@ -47,6 +59,10 @@ pub struct Textures {
     /// Signature colour per (game, kind), kept after the texture itself is evicted.
     accents: HashMap<Key, Option<Color>>,
     scenes: HashMap<String, HeroScene>,
+    /// Generated covers for games with no art (see procedural.rs).
+    fallbacks: HashMap<String, FbEntry>,
+    fb_tx: Sender<FbReq>,
+    fb_done_rx: Mutex<Receiver<(String, Vec<u8>)>>,
 }
 
 impl Textures {
@@ -96,7 +112,28 @@ impl Textures {
                 }
             });
         }
-        Self { map: HashMap::new(), req_tx, done_rx: Mutex::new(done_rx), now: 0.0, accents: HashMap::new(), scenes: HashMap::new() }
+        // One quiet thread for generated covers; requests are rare and small.
+        let (fb_tx, fb_rx) = channel::<FbReq>();
+        let (fb_done_tx, fb_done_rx) = channel::<(String, Vec<u8>)>();
+        std::thread::spawn(move || {
+            while let Ok(req) = fb_rx.recv() {
+                let px = super::procedural::cover(&req.id, req.accent);
+                if fb_done_tx.send((req.id, px)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            map: HashMap::new(),
+            req_tx,
+            done_rx: Mutex::new(done_rx),
+            now: 0.0,
+            accents: HashMap::new(),
+            scenes: HashMap::new(),
+            fallbacks: HashMap::new(),
+            fb_tx,
+            fb_done_rx: Mutex::new(fb_done_rx),
+        }
     }
 
     /// Returns the texture if ready, requesting it otherwise.
@@ -134,9 +171,25 @@ impl Textures {
         matches!(self.map.get(&(id.to_string(), kind)), Some(Entry::Missing))
     }
 
+    /// The generated cover for a game with no art (see procedural.rs), tinted with
+    /// `accent` (usually its system colour). `None` while it is being made; asks for it
+    /// on the first call.
+    pub fn fallback(&mut self, id: &str, accent: Color) -> Option<Handle<Image>> {
+        match self.fallbacks.get(id) {
+            Some(FbEntry::Ready { handle }) => Some(handle.clone()),
+            Some(FbEntry::Loading) => None,
+            None => {
+                self.fallbacks.insert(id.to_string(), FbEntry::Loading);
+                let _ = self.fb_tx.send(FbReq { id: id.to_string(), accent });
+                None
+            }
+        }
+    }
+
     /// Forget misses for a game (new art was just downloaded).
     pub fn invalidate(&mut self, id: &str) {
         self.map.retain(|(gid, _), e| !(gid == id && matches!(e, Entry::Missing)));
+        self.fallbacks.remove(id);
     }
 
     /// Drop everything loaded for a game so improved files on disk are picked up.
@@ -152,6 +205,21 @@ impl Textures {
 
 pub fn pump_textures(mut tex: ResMut<Textures>, mut images: ResMut<Assets<Image>>, time: Res<Time>) {
     tex.now = time.elapsed_secs_f64();
+
+    // Generated covers come back from their thread.
+    let done: Vec<(String, Vec<u8>)> = tex.fb_done_rx.lock().unwrap().try_iter().collect();
+    for (id, px) in done {
+        let image = Image::new(
+            Extent3d { width: procedural::W, height: procedural::H, depth_or_array_layers: 1 },
+            TextureDimension::D2,
+            px,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        let handle = images.add(image);
+        tex.fallbacks.insert(id, FbEntry::Ready { handle });
+    }
+
     let loaded: Vec<Loaded> = tex.done_rx.lock().unwrap().try_iter().collect();
     for l in loaded {
         if matches!(l.key.1, ArtKind::Cover | ArtKind::Hero) {
