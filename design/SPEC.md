@@ -100,6 +100,12 @@ leads with the verdict. Games with no support or unknown ones stay off the tab.
 - **Category change:** the new shelf rises 60 px and fades in, staggered 40 ms per tile. The
   info block slides 16 px from the left and fades in over 250 ms. The new hero enters from
   the side you moved and settles; the old one slides out of its way.
+- **Grid ↔ shelf:** when the move also changes layouts (All / Wishlist / Controller ↔ a
+  shelf), the game you land on keeps its tile: the cover detaches from the cell it held in
+  the grid — or its slot on the shelf — and flies to where it lands, half a second, cubic
+  ease-out with a slight bow and lean. The rest of the new view racks in around the
+  reserved slot, whose own tile waits hidden until the cover arrives and swaps in, so it
+  reads as one tile moving through one space, not two layouts cutting.
 - **Hero variety:** a game can carry alternate heroes (`hero2` / `hero3` in its art folder —
   fetched from the store's screenshots, or dropped in by hand). While a game stays selected
   and nothing is open, its hero quietly cross-fades to the next alternate every ~13 s — no

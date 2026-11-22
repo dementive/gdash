@@ -7,6 +7,7 @@ use bevy::text::FontWeight;
 use bevy::ui::{BackgroundGradient, ColorStop, LinearGradient, UiScale};
 use bevy::window::PrimaryWindow;
 
+use super::flight::Flight;
 use super::fx::{self, Fx};
 use super::glass::ShimmerMaterial;
 use super::state::{BladeKey, Dash, Library};
@@ -51,8 +52,8 @@ pub struct GridDim(usize);
 #[derive(Resource, Default)]
 pub struct GridAnim {
     /// First fully shown row, and the smoothed scroll (canvas px).
-    first_row: usize,
-    scroll: f32,
+    pub(super) first_row: usize,
+    pub(super) scroll: f32,
     /// How much the grid view is showing (0..1).
     shown: f32,
     /// The selection the header is showing, and its slide-in progress.
@@ -138,18 +139,18 @@ pub fn spawn(commands: &mut Commands) {
 }
 
 /// Canvas size (the UI is laid out on a 900-tall canvas).
-fn canvas(windows: &Query<&Window, With<PrimaryWindow>>, scale: &UiScale) -> Vec2 {
+pub(super) fn canvas(windows: &Query<&Window, With<PrimaryWindow>>, scale: &UiScale) -> Vec2 {
     windows
         .single()
         .map(|w| Vec2::new(w.width(), w.height()) / scale.0.max(0.01))
         .unwrap_or(Vec2::new(1600.0, 900.0))
 }
 
-fn columns(width: f32) -> usize {
+pub(super) fn columns(width: f32) -> usize {
     (((width - 2.0 * SIDE + GRID_GAP) / (GRID_W + GRID_GAP)).floor() as usize).max(1)
 }
 
-fn visible_rows(height: f32) -> usize {
+pub(super) fn visible_rows(height: f32) -> usize {
     (((height - GRID_TOP - GRID_BOTTOM + GRID_GAP) / (GRID_H + GRID_GAP)).floor() as usize).max(1)
 }
 
@@ -310,6 +311,7 @@ pub fn animate_grid(
     mut tex: ResMut<Textures>,
     time: Res<Time>,
     mut fx: ResMut<Fx>,
+    flight: Res<Flight>,
     scale: Res<UiScale>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut anim: ResMut<GridAnim>,
@@ -409,12 +411,18 @@ pub fn animate_grid(
             t.vel = 0.0;
         }
         t.appear = (t.appear + dt * 4.0).min(1.0);
+        // The tile the flying card lands on waits hidden and fully arrived, so the
+        // handoff is a swap rather than a pop.
+        let hidden = flight.hiding(dash.current, t.idx);
+        if hidden {
+            t.appear = 1.0;
+        }
         state.push((t.idx, t.sel, t.appear));
 
         let (c, r) = (t.idx % cols, t.idx / cols);
         let x = x0 + c as f32 * (GRID_W + GRID_GAP);
         let y = PAD + r as f32 * (GRID_H + GRID_GAP) - anim.scroll;
-        set_display(&mut node, in_view(t.idx));
+        set_display(&mut node, in_view(t.idx) && !hidden);
         set_px(&mut node, |n| &mut n.left, x.round());
         set_px(&mut node, |n| &mut n.top, y.round());
         let sc = t.sel.clamp(0.0, 1.0);

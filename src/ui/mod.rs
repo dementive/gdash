@@ -3,6 +3,7 @@
 mod background;
 mod depth;
 mod fx;
+mod flight;
 mod glass;
 mod grid;
 mod input;
@@ -43,7 +44,8 @@ pub struct Options {
     pub screenshot: Option<PathBuf>,
     /// Scripted navigation for automated screenshots: U D L R (move), Q E (category),
     /// A B Y G (buttons), K / P (keyboard / controller prompts), X (dry-run launch
-    /// splash), V (force idle ambient), W (wait 4 s), `.` = pause.
+    /// splash), V (force idle ambient), W (wait 4 s), F (freeze a grid↔shelf tile
+    /// flight mid-air), `.` = pause.
     pub script: String,
 }
 
@@ -137,33 +139,47 @@ pub fn run(opts: Options, cfg: Config) {
         .init_resource::<background::HeroFade>()
         .init_resource::<view::ShelfAnim>()
         .init_resource::<grid::GridAnim>()
+        .init_resource::<flight::Flight>()
         .init_resource::<view::InfoAnim>()
         .init_resource::<fx::Fx>()
         .add_systems(PreStartup, load_fonts)
-        .add_systems(Startup, (view::spawn_static, setup_sounds, start_scan))
+        .add_systems(Startup, (view::spawn_static, setup_sounds, start_scan, flight::spawn))
         .add_systems(
             Update,
             (
-                input::gather_input,
-                autopilot,
-                pump_background,
-                mouse_nav,
-                handle_nav,
-                watch_running,
-                fx::update_fx,
-                view::update_scale,
-                view::sync_tabs,
-                view::sync_shelf,
-                view::animate_tabs,
-                view::animate_shelf,
-                (grid::sync_grid, grid::animate_grid, grid::toggle_views).chain(),
-                view::update_info,
-                view::update_background,
-                particles::update_particles,
-                (view::update_ambient, view::update_chrome, view::update_launch_splash).chain(),
-                (view::update_details_sheet, glass::update_glass, glass::animate_cards),
-                view::animate_prompts,
-                textures::pump_textures,
+                (
+                    input::gather_input,
+                    autopilot,
+                    pump_background,
+                    mouse_nav,
+                    handle_nav,
+                    // Runs while the old layout's scroll is still live, and grounds
+                    // cards that landed last frame before the views lay out (no-gap
+                    // handoff).
+                    flight::start_flight,
+                    watch_running,
+                    fx::update_fx,
+                    view::update_scale,
+                    view::sync_tabs,
+                    view::sync_shelf,
+                    view::animate_tabs,
+                    view::animate_shelf,
+                )
+                    .chain(),
+                (
+                    (grid::sync_grid, grid::animate_grid, grid::toggle_views).chain(),
+                    // After the layouts have run, so the landing slot is where the
+                    // card should be this frame.
+                    flight::animate_flight,
+                    view::update_info,
+                    view::update_background,
+                    particles::update_particles,
+                    (view::update_ambient, view::update_chrome, view::update_launch_splash).chain(),
+                    (view::update_details_sheet, glass::update_glass, glass::animate_cards),
+                    view::animate_prompts,
+                    textures::pump_textures,
+                )
+                    .chain(),
             )
                 .chain(),
         );
@@ -710,6 +726,7 @@ fn autopilot(
     mut commands: Commands,
     mut opts: ResMut<Opts>,
     mut nav: ResMut<NavInput>,
+    mut flight: ResMut<flight::Flight>,
     time: Res<Time>,
     bg: Res<Bg>,
     mut fx: ResMut<fx::Fx>,
@@ -760,6 +777,11 @@ fn autopilot(
             // (ambient checks without waiting out the two minutes).
             'V' => {
                 nav.idle = fx::AMBIENT_AFTER + 1.0;
+                None
+            }
+            // Freeze the grid↔shelf cover flight mid-air (morph screenshot checks).
+            'F' => {
+                flight.freeze = true;
                 None
             }
             _ => None,

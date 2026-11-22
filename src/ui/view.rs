@@ -142,7 +142,7 @@ pub enum Slot {
 /// Shelf scroll position.
 #[derive(Resource, Default)]
 pub struct ShelfAnim {
-    scroll: f32,
+    pub(super) scroll: f32,
 }
 
 /// Info block slide/fade, restarted whenever the selection changes.
@@ -1291,6 +1291,7 @@ pub fn animate_shelf(
     mut tex: ResMut<Textures>,
     time: Res<Time>,
     mut fx: ResMut<Fx>,
+    flight: Res<super::flight::Flight>,
     scale: Res<UiScale>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut anim: ResMut<ShelfAnim>,
@@ -1333,6 +1334,12 @@ pub fn animate_shelf(
             t.vel = 0.0;
         }
         t.appear = (t.appear + dt * 3.2).min(1.0);
+        // The tile the flying card lands on waits hidden and fully arrived, so the
+        // handoff is a swap rather than a pop.
+        let hidden = flight.hiding(dash.current, t.idx);
+        if hidden {
+            t.appear = 1.0;
+        }
         state.push((t.idx, t.sel, t.appear));
     }
     state.sort_by_key(|s| s.0);
@@ -1357,6 +1364,8 @@ pub fn animate_shelf(
         set_px(&mut node, |n| &mut n.top, (TILE_SEL_H - h).round());
         set_px(&mut node, |n| &mut n.width, w.round());
         set_px(&mut node, |n| &mut n.height, h.round());
+        // The flying card's slot stays empty until the card lands in it.
+        set_display(&mut node, !flight.hiding(dash.current, t.idx));
         let ring = alpha(ring_color, sc);
         if outline.color != ring {
             outline.color = ring;
@@ -1458,7 +1467,7 @@ pub fn animate_shelf(
         let Some(k) = lookup(r.0) else { continue };
         // Hidden during the launch flash, where the dark floor fade would show as boxes.
         let has_cover = covers.iter().any(|c| c.0 == r.0);
-        set_display(&mut node, has_cover && launch < 0.02);
+        set_display(&mut node, has_cover && launch < 0.02 && !flight.hiding(dash.current, r.0));
         let (w, _) = size_of(state[k].1);
         set_px(&mut node, |n| &mut n.left, xs[k].round());
         set_px(&mut node, |n| &mut n.width, w.round());

@@ -37,7 +37,7 @@ the dashboard immediately and refresh it in the background.
 | `--fetch-art` | Download missing artwork and print a coverage table |
 | `--refresh-art` | Retry artwork that previously wasn't found |
 | `--enhance-art` | Run the ML pass now (depth maps, segmentation, upscaling); the dashboard also does this in the background |
-| `--nav <keys> --screenshot <file.png>` | Scripted navigation (`L R` move, `Q E` category, `A B Y G` buttons, `K P` keyboard/controller prompts, `X` dry-run launch splash, `W` wait 4 s) then a screenshot; used for visual checks |
+| `--nav <keys> --screenshot <file.png>` | Scripted navigation (`L R` move, `Q E` category, `A B Y G` buttons, `K P` keyboard/controller prompts, `X` dry-run launch splash, `F` freeze a grid↔shelf tile flight mid-air, `W` wait 4 s) then a screenshot; used for visual checks |
 
 ## Controls
 
@@ -130,6 +130,10 @@ the UI stays sharp. Each game gets:
   the game's id and colour
 - **focus pull**: while the details sheet or the guide is open, the background racks a little
   out of focus and dims — the camera's attention moves to the overlay
+- **one space, two layouts**: switching between a grid tab (All, Wishlist, Controller) and a
+  shelf tab carries the selected game's cover across — it flies from its cell to its slot in
+  one move while the rest rack in around the reserved slot, whose own tile waits hidden
+  until it lands
 - **the picture lights the room**: the shelf's floor reflection and the floor under the tiles
   are tinted from the hero's own lower edge, so the shelf is lit by whatever light is in the
   art above it
