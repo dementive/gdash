@@ -41,7 +41,8 @@ struct FragIn {
 @group(2) @binding(22) var fxmap_b_s: sampler;
 // x: 0 = showcase (image across the top, UI shading), 1 = backdrop (image fills the
 // screen, for the All grid). In between while switching. The launch splash borrows
-// the same full-screen layout: y is its swell, z its white-out.
+// the same full-screen layout: y is its swell, z its white-out. Idle ambient takes it
+// too: w eases the picture to full-bleed and relaxes the UI shading with it.
 @group(2) @binding(23) var<uniform> backdrop: vec4<f32>;
 
 const INK: vec3<f32> = vec3<f32>(0.0009, 0.0015, 0.0024); // #030508 in linear
@@ -74,7 +75,8 @@ fn layout_params(screen: vec2<f32>, tex: vec2<f32>, f: vec2<f32>) -> vec4<f32> {
     let shown2 = screen / (tex * max(screen.x / tex.x, screen.y / tex.y) * OVERSCAN);
     let cx2 = clamp(f.x, shown2.x * 0.5, 1.0 - shown2.x * 0.5);
     let cy2 = clamp(f.y, shown2.y * 0.5, 1.0 - shown2.y * 0.5);
-    return mix(vec4<f32>(cx1, y01, shown1), vec4<f32>(cx2, cy2 - 0.5 * shown2.y, shown2), max(backdrop.x, backdrop.y));
+    let full = max(max(backdrop.x, backdrop.y), backdrop.w);
+    return mix(vec4<f32>(cx1, y01, shown1), vec4<f32>(cx2, cy2 - 0.5 * shown2.y, shown2), full);
 }
 
 fn hero_uv(uv: vec2<f32>, screen: vec2<f32>, tex: vec2<f32>, z: f32, f: vec2<f32>) -> vec2<f32> {
@@ -203,9 +205,9 @@ fn magnification(screen: vec2<f32>, tex: vec2<f32>, z: f32, f: vec2<f32>) -> f32
 }
 
 // The image fades out over its lower part into the scene below, and is absent past it.
-// The grid backdrop and the launch swell both take the whole screen.
+// The grid backdrop, the launch swell and idle ambient all take the whole screen.
 fn hero_mask(huv: vec2<f32>) -> f32 {
-    return mix(1.0 - smoothstep(0.7, 1.0, huv.y), 1.0, max(backdrop.x, backdrop.y));
+    return mix(1.0 - smoothstep(0.7, 1.0, huv.y), 1.0, max(max(backdrop.x, backdrop.y), backdrop.w));
 }
 
 fn srgb_alpha(a: f32) -> f32 {
@@ -376,8 +378,11 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
     // (The grid darkens evenly on its own instead.)
     // Grid mode dims evenly (below) but still borrows the soft pools at the very top and
     // bottom, so the header and the prompts keep a whisper of contrast — no more.
-    let ui = 1.0 - backdrop.x;
-    let pool = max(ui, 0.2 * backdrop.x);
+    // Idle ambient racks the chrome away, so the shading meant to keep it readable goes
+    // with it: the art stands on its own.
+    let wake = 1.0 - backdrop.w;
+    let ui = (1.0 - backdrop.x) * wake;
+    let pool = max(1.0 - backdrop.x, 0.2 * backdrop.x) * wake;
     col = mix(col, INK, srgb_alpha(left_s) * ui);
     col = mix(col, INK, srgb_alpha(bottom_s) * pool);
     col = mix(col, INK, srgb_alpha(top_s) * pool);
@@ -386,8 +391,8 @@ fn fragment(in: FragIn) -> @location(0) vec4<f32> {
     let v = smoothstep(1.3, 0.4, length((uv - 0.5) * vec2<f32>(1.2, 1.0)));
     col *= mix(0.7, 1.0, v);
     // The grid's backdrop stays art, not a grey wash: a light even dim, with the soft
-    // pools above doing the contrast work.
-    col *= 1.0 - 0.5 * backdrop.x;
+    // pools above doing the contrast work. Ambient relaxes it to a whisper.
+    col *= 1.0 - backdrop.x * mix(0.5, 0.18, backdrop.w);
 
     let amount = style.y;
     // Light beams from the top corners; foreground subjects block some of them.

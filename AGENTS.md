@@ -23,7 +23,7 @@ visuals and keep drift between them and the code deliberate.
 - Visual changes: verify with the app's scripted screenshot mode, e.g.
   `cargo run -- --windowed --nav "RWW" --screenshot <file.png>`
   Script letters: `U D L R` move, `Q E` category, `A B Y G` buttons, `K P` device
-  prompts, `X` dry-run launch burst, `W` wait 4 s. Dev profile is fine for screenshots;
+  prompts, `X` dry-run launch burst, `V` force idle ambient, `W` wait 4 s. Dev profile is fine for screenshots;
   only `install.ps1` builds release.
 
 ## Conventions

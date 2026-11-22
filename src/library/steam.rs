@@ -60,6 +60,7 @@ pub fn scan(override_path: Option<&Path>) -> Vec<Game> {
                 art_name: None,
                 last_played: last_played.get(&appid).copied().filter(|&t| t > 0),
                 controller: None,
+                accent: None,
             });
         }
     }

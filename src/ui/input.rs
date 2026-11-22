@@ -44,6 +44,11 @@ pub struct NavInput {
     pub pad_event: Option<PadEvent>,
     /// Pin the prompt style (scripted screenshots); `None` follows real input.
     pub forced: Option<Device>,
+    /// Seconds since anything was touched: a key held, a button pressed, a stick
+    /// deflected, the mouse moved or clicked. Drives idle ambient (fx.rs). Holds —
+    /// does not accumulate — while the window is unfocused, so a running game never
+    /// spends it.
+    pub idle: f32,
     pads: usize,
     initialised: bool,
     /// Mouse travel since the controller was last used; small bumps don't switch prompts.
@@ -260,4 +265,14 @@ pub fn gather_input(
     if cursor.visible != visible {
         cursor.visible = visible;
     }
+
+    // The idle clock for ambient mode: any real activity restarts it. Unfocused frames
+    // return above, so a game with the screen never spends it either.
+    let active = !nav.actions.is_empty()
+        || nav.clicked
+        || nav.mouse_moved
+        || kb_used
+        || pad_used
+        || mouse_used;
+    nav.idle = if active { 0.0 } else { nav.idle + dt };
 }

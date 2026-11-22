@@ -106,6 +106,10 @@ pub struct Game {
     /// Gamepad support, when gdash could find it. `None` = unknown.
     #[serde(default)]
     pub controller: Option<ControllerSupport>,
+    /// Signature colour pinned by hand in config.toml (`accent = "#rrggbb"` under the
+    /// game's `[overrides.<id>]`), used instead of the one extracted from its art.
+    #[serde(default)]
+    pub accent: Option<String>,
 }
 
 impl Game {
@@ -146,6 +150,9 @@ pub fn scan_all(cfg: &Config) -> Vec<Game> {
             }
             if let Some(c) = ov.controller.as_deref().and_then(ControllerSupport::parse) {
                 g.controller = Some(c);
+            }
+            if let Some(a) = &ov.accent {
+                g.accent = Some(a.clone());
             }
         }
     }

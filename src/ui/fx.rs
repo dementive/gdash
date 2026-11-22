@@ -10,6 +10,7 @@ use bevy::window::PrimaryWindow;
 use super::input::{Device, NavInput};
 use super::state::{Dash, Library, Mode};
 use super::textures::Textures;
+use crate::library::Game;
 
 /// Each game gets its own atmosphere, picked from its id and art colour, so moving through
 /// the shelf never feels like the same backdrop with a new picture.
@@ -68,10 +69,43 @@ pub fn look_for(id: &str, accent: Color) -> GameLook {
     }
 }
 
+/// Seconds of quiet browsing before the interface racks itself away and the hero takes
+/// the whole screen (see update_ambient and background.wgsl).
+pub const AMBIENT_AFTER: f32 = 120.0;
+
+/// Idle ambient only shows while browsing: overlays keep the interface, a launch owns
+/// the screen, and the quiet time has to actually pass.
+pub fn wants_ambient(mode: Mode, idle: f32, launching: bool) -> bool {
+    mode == Mode::Browse && !launching && idle > AMBIENT_AFTER
+}
+
+/// A colour pinned by hand in config.toml (`accent = "#rrggbb"` under the game's
+/// `[overrides.<id>]`). The `#` is optional. `None` when it isn't a colour, so a typo
+/// falls back to what the art says rather than to nothing.
+pub fn parse_accent(s: &str) -> Option<Color> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    let f = |sh: u32| ((v >> sh) & 0xff) as f32 / 255.0;
+    Some(Color::srgb(f(16), f(8), f(0)))
+}
+
+/// The game's signature colour: what the user pinned first, then what its art says
+/// (extracted from the box art or hero), then whatever the caller decides — usually
+/// the blade's colour.
+pub fn game_accent(g: &Game, tex: &Textures) -> Option<Color> {
+    g.accent.as_deref().and_then(parse_accent).or_else(|| tex.accent(&g.id))
+}
+
 #[derive(Resource, Default)]
 pub struct Fx {
     /// The selected game's colour (from its art), smoothed. Falls back to the category's.
     pub accent: LinearRgba,
+    /// 0..1, racks the interface away after long idle and lets the hero fill the
+    /// screen (AMBIENT_AFTER). Rises slowly, falls fast on wake.
+    pub ambient: f32,
     /// 0..1, spikes when the selection or category changes and decays quickly.
     pub kick: f32,
     /// Seconds since a game was launched, while the launch splash plays.
@@ -189,7 +223,7 @@ pub fn update_fx(
     let sel = dash.sel[dash.current];
 
     let game = dash.selected().and_then(|e| super::view::game_of(&lib, e));
-    let target = game.and_then(|g| tex.accent(&g.id)).unwrap_or(dash.blade().color).to_linear();
+    let target = game.and_then(|g| game_accent(g, &tex)).unwrap_or(dash.blade().color).to_linear();
     if fx.accent == LinearRgba::NONE {
         fx.accent = target;
     } else {
@@ -223,6 +257,17 @@ pub fn update_fx(
         fx.focus += (want_focus - fx.focus) * (1.0 - (-dt * 6.0).exp());
     }
 
+    // Idle ambient: quiet browsing racks the interface away and the hero spreads to
+    // full-bleed (update_ambient drives the chrome, background.wgsl the picture). It
+    // rises slowly — nothing to watch — and falls fast, because the touch that wakes
+    // the dashboard is swallowed (handle_nav) so it never presses anything.
+    let want = wants_ambient(dash.mode, nav.idle, fx.launch.is_some()) as u32 as f32;
+    let rate = if want > fx.ambient { 0.55 } else { 8.0 };
+    fx.ambient += (want - fx.ambient) * (1.0 - (-rate * dt).exp());
+    if (fx.ambient - want).abs() < 1e-3 {
+        fx.ambient = want;
+    }
+
     if let Some(t) = fx.launch.as_mut() {
         *t += dt;
         if *t > 2.5 {
@@ -250,9 +295,11 @@ pub fn update_fx(
     }
 
     // Parallax camera: a slow drift, plus look-around from the right stick or the mouse.
+    // Ambient settles it down further.
     let t = time.elapsed_secs();
     let seed = fx.look.seed * 6.283;
-    let drift = Vec2::new((t * 0.11 + seed).sin(), 0.7 * (t * 0.083 + seed * 1.7).sin());
+    let drift = Vec2::new((t * 0.11 + seed).sin(), 0.7 * (t * 0.083 + seed * 1.7).sin())
+        * (1.0 - 0.5 * fx.ambient);
     let mut aim = Vec2::ZERO;
     for pad in &pads {
         let v = Vec2::new(
@@ -288,6 +335,55 @@ pub fn update_fx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn close(c: Color, r: f32, g: f32, b: f32) -> bool {
+        let s = c.to_srgba();
+        (s.red - r).abs() < 0.002 && (s.green - g).abs() < 0.002 && (s.blue - b).abs() < 0.002
+    }
+
+    #[test]
+    fn ambient_wants_quiet_browsing() {
+        assert!(wants_ambient(Mode::Browse, AMBIENT_AFTER + 0.1, false));
+        // The mark itself is still awake; so is anything short of it.
+        assert!(!wants_ambient(Mode::Browse, AMBIENT_AFTER, false));
+        assert!(!wants_ambient(Mode::Browse, 1.0, false));
+        // Overlays keep the interface, and a launch owns the screen.
+        assert!(!wants_ambient(Mode::Guide, f32::MAX, false));
+        assert!(!wants_ambient(Mode::Details, f32::MAX, false));
+        assert!(!wants_ambient(Mode::Running, f32::MAX, false));
+        assert!(!wants_ambient(Mode::Browse, f32::MAX, true));
+    }
+
+    #[test]
+    fn hand_pinned_accents_parse() {
+        assert!(close(parse_accent("#2fd0c0").unwrap(), 0.184, 0.816, 0.753));
+        assert!(close(parse_accent("d65bd0").unwrap(), 0.839, 0.357, 0.816));
+        // A typo falls back to the art's colour, never to a surprise.
+        assert!(parse_accent("#12").is_none());
+        assert!(parse_accent("#2fd0cg").is_none());
+        assert!(parse_accent("not-a-colour").is_none());
+        assert!(parse_accent("").is_none());
+    }
+
+    #[test]
+    fn pinned_accent_wins_over_the_art() {
+        let mut tex = Textures::new();
+        let g = Game {
+            id: "x".into(),
+            title: "X".into(),
+            system: crate::library::System::Steam,
+            launch: crate::library::Launch::Steam { appid: 1, install_dir: Default::default() },
+            steam_appid: Some(1),
+            art_name: None,
+            last_played: None,
+            controller: None,
+            accent: Some("#ff0000".into()),
+        };
+        assert!(close(game_accent(&g, &tex).unwrap(), 1.0, 0.0, 0.0));
+        // Nothing pinned and no art loaded: the caller decides.
+        let bare = Game { accent: None, ..g };
+        assert!(game_accent(&bare, &tex).is_none());
+    }
 
     #[test]
     fn looks_are_stable_and_varied() {

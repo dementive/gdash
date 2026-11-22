@@ -131,6 +131,7 @@ pub fn spawn(commands: &mut Commands) {
             display: Display::None,
             ..default()
         },
+        UiTransform::default(),
         GlobalZIndex(6),
         Pickable::IGNORE,
     ));
@@ -157,6 +158,7 @@ pub fn sync_grid(
     mut commands: Commands,
     dash: Res<Dash>,
     lib: Res<Library>,
+    tex: Res<Textures>,
     mut shimmer_mats: ResMut<Assets<ShimmerMaterial>>,
     layer: Query<Entity, With<GridLayer>>,
     mut anim: ResMut<GridAnim>,
@@ -184,6 +186,9 @@ pub fn sync_grid(
             let game = game_of(&lib, e);
             // Cards ripple in from the top-left when the tab opens.
             let appear = if entering { -0.012 * i.saturating_sub(first) as f32 } else { 1.0 };
+            let fb_tint = game
+                .map(|g| fx::game_accent(g, &tex).unwrap_or_else(|| super::view::system_color(g.system)))
+                .unwrap_or(blade.color);
             g.spawn((
                 GridTile { idx: i, sel: if i == sel { 1.0 } else { 0.0 }, vel: 0.0, appear },
                 Hovered::default(),
@@ -207,7 +212,10 @@ pub fn sync_grid(
                 GlobalZIndex(7),
             ))
             .with_children(|t| {
-                let base = game.map(|g| super::view::system_color(g.system)).unwrap_or(blade.color);
+                // Translucent tint so the backdrop — or the generated cover — shows
+                // through fallback cards too. The game's own colour when its hero has
+                // one, else the blade's.
+                let base = fb_tint;
                 t.spawn((
                     GridFallback(i),
                     Node {
@@ -220,8 +228,6 @@ pub fn sync_grid(
                         border_radius: BorderRadius::all(px(CARD_R * 0.8)),
                         ..default()
                     },
-                    // Translucent tint so the backdrop — or the generated cover — shows
-                    // through fallback cards too.
                     BackgroundColor(theme::alpha(darken(base, 0.7), 0.40)),
                     Pickable::IGNORE,
                 ))
@@ -479,8 +485,10 @@ pub fn animate_grid(
                 set_display(&mut node, false);
                 if tex.is_missing(&game.id, ArtKind::Cover) {
                     missing.push(gi.0);
-                    // No art anywhere: the generated cover, tinted like real art.
-                    if let Some(fb) = tex.fallback(&game.id, super::view::system_color(game.system)) {
+                    // No art anywhere: the generated cover, tinted like real art — the
+                    // game's own colour when its hero has one.
+                    let fb_accent = fx::game_accent(game, &tex).unwrap_or_else(|| super::view::system_color(game.system));
+                    if let Some(fb) = tex.fallback(&game.id, fb_accent) {
                         if img.image != fb {
                             img.image = fb;
                         }
@@ -543,6 +551,7 @@ pub fn animate_grid(
 pub fn toggle_views(
     dash: Res<Dash>,
     anim: Res<GridAnim>,
+    fx: Res<Fx>,
     mut grid: Query<&mut Node, Or<(With<GridLayer>, With<GridHeader>)>>,
     mut shade: Query<(&mut Node, &mut BackgroundColor), (With<GridShade>, Without<GridLayer>, Without<GridHeader>)>,
     mut shelf: Query<
@@ -559,7 +568,8 @@ pub fn toggle_views(
     }
     if let Ok((mut n, mut bg)) = shade.single_mut() {
         set_display(&mut n, on);
-        set_color(&mut bg, BackgroundColor(Color::srgba(0.01, 0.015, 0.025, 0.12 * anim.shown)));
+        // Ambient racks the cards away, so the dim meant to keep them readable goes too.
+        set_color(&mut bg, BackgroundColor(Color::srgba(0.01, 0.015, 0.025, 0.12 * anim.shown * (1.0 - fx.ambient))));
     }
 }
 

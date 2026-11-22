@@ -23,7 +23,7 @@ fn main() {
 
     if has("--help") || has("-h") {
         println!(
-            "gdash [--scan] [--fetch-art] [--refresh-art] [--enhance-art] [--windowed] [--screenshot <file.png>] [--nav <UDLRABGKPXW>]\n\
+            "gdash [--scan] [--fetch-art] [--refresh-art] [--enhance-art] [--windowed] [--screenshot <file.png>] [--nav <UDLRQEABYGKPXVW>]\n\
              config: {}\n data: {}",
             paths::config_file().display(),
             paths::data_dir().display()
@@ -97,6 +97,9 @@ fn main() {
 
     if has("--enhance-art") {
         let games = library::load_cache().unwrap_or_else(|| library::scan_all(&cfg));
+        // Wishlist heroes show too (the grid backdrop) — they just aren't installed.
+        let mut games = games;
+        games.extend(library::wishlist::load(&cfg, &games));
         enhance::run_cli(&games);
         return;
     }

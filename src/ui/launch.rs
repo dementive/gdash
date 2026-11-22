@@ -148,6 +148,7 @@ mod tests {
             art_name: None,
             last_played: None,
             controller: None,
+            accent: None,
         }
     }
 

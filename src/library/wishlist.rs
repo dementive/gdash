@@ -99,6 +99,7 @@ fn from_items(items: Vec<(String, String)>, installed: &[Game]) -> Vec<Game> {
             art_name: None,
             last_played: None,
             controller: None,
+            accent: None,
         });
     }
     games.sort_by_key(|g| g.sort_key());
@@ -226,6 +227,7 @@ mod tests {
             art_name: None,
             last_played: None,
             controller: None,
+            accent: None,
         }
     }
 

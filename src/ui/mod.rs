@@ -43,7 +43,7 @@ pub struct Options {
     pub screenshot: Option<PathBuf>,
     /// Scripted navigation for automated screenshots: U D L R (move), Q E (category),
     /// A B Y G (buttons), K / P (keyboard / controller prompts), X (dry-run launch
-    /// splash), `.` = pause.
+    /// splash), V (force idle ambient), W (wait 4 s), `.` = pause.
     pub script: String,
 }
 
@@ -160,7 +160,7 @@ pub fn run(opts: Options, cfg: Config) {
                 view::update_info,
                 view::update_background,
                 particles::update_particles,
-                (view::update_chrome, view::update_launch_splash).chain(),
+                (view::update_ambient, view::update_chrome, view::update_launch_splash).chain(),
                 (view::update_details_sheet, glass::update_glass, glass::animate_cards),
                 view::animate_prompts,
                 textures::pump_textures,
@@ -438,6 +438,13 @@ fn handle_nav(
 ) {
     let mut sfx: Vec<Sfx> = Vec::new();
     let mut effects = Effects::default();
+
+    // Waking from idle ambient: the first touch racks the interface back in — and is
+    // spent doing exactly that. It never presses what it landed on (fx.rs drives the
+    // rack; a launch or an overlay can't be open while ambient).
+    if fx.ambient > 0.5 && nav.idle == 0.0 {
+        return;
+    }
 
     for &a in &nav.actions {
         let mut action = None;
@@ -749,9 +756,19 @@ fn autopilot(
                 fx.start_launch();
                 None
             }
+            // Jump the idle clock: the chrome racks away and the hero takes the screen
+            // (ambient checks without waiting out the two minutes).
+            'V' => {
+                nav.idle = fx::AMBIENT_AFTER + 1.0;
+                None
+            }
             _ => None,
         };
         nav.actions.extend(a);
+        // Scripted input is user input: it wakes ambient like a real touch would.
+        if a.is_some() {
+            nav.idle = 0.0;
+        }
         // Leave time for the last animation to finish before the screenshot.
         // 'W' waits a few seconds (lets the background's particles build up).
         *next = t + match (opts.script.is_empty(), c.eq_ignore_ascii_case(&'X')) {

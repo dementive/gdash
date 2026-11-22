@@ -236,6 +236,7 @@ mod tests {
             art_name: None,
             last_played: None,
             controller: None,
+            accent: None,
         }
     }
 
@@ -309,6 +310,7 @@ mod tests {
             art_name: None,
             last_played: None,
             controller: None,
+            accent: None,
         };
         assert_eq!(scan_local(&steam), None);
     }

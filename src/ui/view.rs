@@ -26,6 +26,8 @@ pub struct BgNode;
 #[derive(Component)]
 pub struct Fader;
 #[derive(Component)]
+pub struct TopBar;
+#[derive(Component)]
 pub struct TabsRow;
 #[derive(Component)]
 pub struct Tab(pub usize);
@@ -502,6 +504,7 @@ pub fn spawn_static(
             height: px(TILE_SEL_H),
             ..default()
         },
+        UiTransform::default(),
         GlobalZIndex(6),
         Pickable::IGNORE,
     ));
@@ -520,6 +523,7 @@ pub fn spawn_static(
                 align_items: AlignItems::Center,
                 ..default()
             },
+            UiTransform::default(),
             GlobalZIndex(20),
             Pickable::IGNORE,
         ))
@@ -548,6 +552,7 @@ pub fn spawn_static(
 fn spawn_top_bar(commands: &mut Commands) {
     commands
         .spawn((
+            TopBar,
             Node {
                 position_type: PositionType::Absolute,
                 left: px(SIDE),
@@ -558,6 +563,7 @@ fn spawn_top_bar(commands: &mut Commands) {
                 align_items: AlignItems::Center,
                 ..default()
             },
+            UiTransform::default(),
             GlobalZIndex(20),
             Pickable::IGNORE,
         ))
@@ -1415,8 +1421,10 @@ pub fn animate_shelf(
                 if tex.is_missing(&game.id, ArtKind::Cover) {
                     missing.push(ti.0);
                     // No art anywhere: show the generated cover (procedural.rs), so the
-                    // tile is still a piece of the library, reflection included.
-                    if let Some(fb) = tex.fallback(&game.id, system_color(game.system)) {
+                    // tile is still a piece of the library, reflection included. It
+                    // takes the game's own colour when the hero art has one.
+                    let fb_accent = fx::game_accent(game, &tex).unwrap_or_else(|| system_color(game.system));
+                    if let Some(fb) = tex.fallback(&game.id, fb_accent) {
                         if img.image != fb {
                             img.image = fb.clone();
                         }
@@ -1507,7 +1515,12 @@ pub fn update_info(
     let e = ease(anim.t);
 
     if let Ok(mut tf) = block.single_mut() {
-        let want = UiTransform { translation: Val2::px(-16.0 * (1.0 - e), 0.0), ..default() };
+        // Idle ambient racks the whole block off to the left (update_ambient moves the
+        // rest of the chrome).
+        let want = UiTransform {
+            translation: Val2::px(-16.0 * (1.0 - e) - 840.0 * fx.ambient, 0.0),
+            ..default()
+        };
         if *tf != want {
             *tf = want;
         }
@@ -1566,7 +1579,11 @@ pub fn update_info(
                 set_color(&mut color, TextColor(Color::srgba(1.0, 1.0, 1.0, 0.8 * e)));
             }
             Slot::PlayLabel => set_text(&mut text, play_label),
-            Slot::Count => set_text(&mut text, &count),
+            Slot::Count => {
+                set_text(&mut text, &count);
+                // Sits over the shelf, so it fades with it when ambient racks it away.
+                set_color(&mut color, TextColor(Color::srgba(1.0, 1.0, 1.0, 0.55 * (1.0 - fx.ambient))));
+            }
             _ => {}
         }
     }
@@ -1752,8 +1769,8 @@ pub fn update_background(
     // The launch swell leans into the screen as it fills it.
     let zpush = 1.0 + 0.09 * *splash;
     mat.zoom = Vec4::new(ma.zoom * zpush, mb.zoom * zpush, physical.x, physical.y);
-    // x: grid backdrop, y: launch swell, z: launch white-out.
-    mat.layout = Vec4::new(fill, *splash, fx.launch_flash(), 0.0);
+    // x: grid backdrop, y: launch swell, z: launch white-out, w: idle ambient.
+    mat.layout = Vec4::new(fill, *splash, fx.launch_flash(), fx.ambient);
 
     // Tell the particles where each image is (current one last). While an overlay holds the
     // focus, the picture behind it is blurred and dim — its particles fade out too.
@@ -1934,7 +1951,7 @@ pub fn update_details_sheet(
         state.1 = approach(state.1, 0.0, 10.0, dt);
     }
     if let Some(g) = &game {
-        let accent = tex.accent(&g.id).unwrap_or_else(|| dash.blade().color);
+        let accent = fx::game_accent(g, &tex).unwrap_or_else(|| dash.blade().color);
         let mut source: Option<(Handle<Image>, Vec2)> = None;
         if let Some((h, _)) = tex.get(&g.id, ArtKind::Hero) {
             let focal = tex.scene(&g.id).map(|s| s.focal).unwrap_or(Vec2::new(0.5, 0.4));
@@ -2189,5 +2206,89 @@ pub fn animate_prompts(
         if *tf != want {
             *tf = want;
         }
+    }
+}
+
+// ---------- idle ambient ----------
+
+/// Racks the chrome away while the dashboard idles (fx.rs `AMBIENT_AFTER`): the top bar
+/// lifts out, the prompts drop away, and the shelf — or the grid and its header — sinks
+/// off-screen, leaving the hero alone on the glass. `update_info` slides the info block
+/// and fades the counter; background.wgsl eases the hero to full-bleed. Any touch racks
+/// everything back (and handle_nav swallows that first input).
+pub fn update_ambient(
+    fx: Res<Fx>,
+    mut bar: Query<
+        &mut UiTransform,
+        (
+            With<TopBar>,
+            Without<Prompts>,
+            Without<ShelfLayer>,
+            Without<super::grid::GridHeader>,
+            Without<super::grid::GridLayer>,
+        ),
+    >,
+    mut prompts: Query<
+        &mut UiTransform,
+        (
+            With<Prompts>,
+            Without<TopBar>,
+            Without<ShelfLayer>,
+            Without<super::grid::GridHeader>,
+            Without<super::grid::GridLayer>,
+        ),
+    >,
+    mut shelf: Query<
+        &mut UiTransform,
+        (
+            With<ShelfLayer>,
+            Without<TopBar>,
+            Without<Prompts>,
+            Without<super::grid::GridHeader>,
+            Without<super::grid::GridLayer>,
+        ),
+    >,
+    mut grid_header: Query<
+        &mut UiTransform,
+        (
+            With<super::grid::GridHeader>,
+            Without<TopBar>,
+            Without<Prompts>,
+            Without<ShelfLayer>,
+            Without<super::grid::GridLayer>,
+        ),
+    >,
+    mut grid: Query<
+        &mut UiTransform,
+        (
+            With<super::grid::GridLayer>,
+            Without<TopBar>,
+            Without<Prompts>,
+            Without<ShelfLayer>,
+            Without<super::grid::GridHeader>,
+        ),
+    >,
+) {
+    let k = fx.ambient;
+    let slide = |tf: &mut Mut<UiTransform>, y: f32| {
+        let want = UiTransform { translation: Val2::px(0.0, y), ..default() };
+        if **tf != want {
+            **tf = want;
+        }
+    };
+    for mut tf in &mut bar {
+        slide(&mut tf, 110.0 * k);
+    }
+    for mut tf in &mut prompts {
+        slide(&mut tf, -90.0 * k);
+    }
+    for mut tf in &mut shelf {
+        slide(&mut tf, -440.0 * k);
+    }
+    for mut tf in &mut grid_header {
+        slide(&mut tf, 150.0 * k);
+    }
+    for mut tf in &mut grid {
+        slide(&mut tf, -1100.0 * k);
     }
 }

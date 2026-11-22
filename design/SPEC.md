@@ -7,8 +7,12 @@ entry in `.claude/launch.json`) to see it with real art.
 
 - **The game art is the interface.** The hero image fills the screen. UI sits on gradients
   that darken only where text needs it, never on an opaque panel.
-- **Colour is an accent, not a wash.** Each category colour appears in three places only: the
-  active tab underline, the selected tile's glow and the Play button's glow.
+- **Colour is an accent, not a wash.** The category colour appears in the active tab
+  underline and stands by as the fallback. The selected tile's glow and the Play
+  button's glow carry the selected game's own signature colour, lifted from its art
+  (the most prominent saturated hue; grey art falls back to the category's). Pin a
+  game's colour by hand with `accent = "#rrggbb"` under its `[overrides.<id>]` in
+  config.toml.
 - **One focus at a time.** Exactly one tile is lifted, ringed and glowing. Everything else
   steps back (72% opacity, smaller).
 - **Everything moves, gently.** Selection, category changes and hero swaps all ease
@@ -101,6 +105,13 @@ leads with the verdict. Games with no support or unknown ones stay off the tab.
   and nothing is open, its hero quietly cross-fades to the next alternate every ~13 s — no
   direction, the same motion style and atmosphere, the usual front-to-back dissolve. Overlays
   pause it; a launch owns the screen.
+- **Idle ambient:** left untouched for two minutes, the interface racks itself away — the
+  top bar lifts out, the info block and prompts slide off, the shelf (or the grid with its
+  header) sinks — and the hero spreads to a full-bleed backdrop with its UI shading eased
+  off and its drift slowed; hero alternates keep rotating. Any touch racks it all back,
+  and the first input only restores — it never presses what it landed on. Overlays and a
+  launch keep the interface. The art never stops moving (parallax, motion styles,
+  alternates), so long ambient stays OLED-safe.
 - **Startup:** fade in from black over 0.6 s, with the same shelf rise.
 
 ## Type

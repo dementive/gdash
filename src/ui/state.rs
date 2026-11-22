@@ -420,6 +420,7 @@ mod tests {
             art_name: None,
             last_played: None,
             controller,
+            accent: None,
         }
     }
 

@@ -53,6 +53,9 @@ pub struct Override {
     pub steam_appid: Option<u32>,
     /// Gamepad support: "full", "partial" or "none". Wins over anything gdash finds.
     pub controller: Option<String>,
+    /// Signature colour for the glow ring and the Play pill, e.g. `accent = "#d65bd0"`.
+    /// Wins over the colour lifted from the game's own art.
+    pub accent: Option<String>,
 }
 
 impl Default for Config {

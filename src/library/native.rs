@@ -58,6 +58,7 @@ pub fn scan_root(root: &Path, cfg: &Config) -> Vec<Game> {
             art_name: None,
             last_played: None,
             controller: None,
+            accent: None,
         });
     }
     games

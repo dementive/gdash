@@ -43,6 +43,7 @@ pub fn scan_xbox(emu: &Emulator) -> Vec<Game> {
                 art_name: Some(art_name(&name)),
                 last_played: None,
                 controller: None,
+                accent: None,
             });
         }
     }
@@ -79,6 +80,7 @@ pub fn scan_x360(emu: &Emulator) -> Vec<Game> {
                 art_name: Some(art_name(&name)),
                 last_played,
                 controller: None,
+                accent: None,
             };
             // Prefer a disc image over loose files when the same title appears twice.
             let slot = slug(&title);

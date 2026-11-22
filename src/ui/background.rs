@@ -65,7 +65,7 @@ pub struct BgMaterial {
     #[sampler(22)]
     pub fxmap_b: Handle<Image>,
     /// x: 0 showcase layout, 1 full-screen backdrop (All grid); y: launch swell to
-    /// full-screen; z: launch white-out.
+    /// full-screen; z: launch white-out; w: idle ambient (same full-bleed, shading off).
     #[uniform(23)]
     pub layout: Vec4,
 }
