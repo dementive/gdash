@@ -275,9 +275,11 @@ pub fn update_fx(
 
     let env = fx.launch_env();
     let Ok(mut bloom) = cam.single_mut() else { return };
-    // Only light answers the input — bloom swells a touch while a launch plays out.
-    // Nothing bends the picture: no lens pinch, no fringing, no warp.
-    let want_bloom = BLOOM + 0.30 * env;
+    // Only light answers the input — bloom swells a touch while a launch plays out, and
+    // eases off while an overlay racks the picture out of focus, so its halos don't
+    // smear behind the glass. Nothing bends the picture: no lens pinch, no fringing,
+    // no warp.
+    let want_bloom = (BLOOM + 0.30 * env) * (1.0 - 0.45 * fx.focus);
     if (bloom.intensity - want_bloom).abs() > 1e-4 {
         bloom.intensity = want_bloom;
     }

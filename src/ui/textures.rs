@@ -13,7 +13,11 @@ use super::scene::Emitter;
 use crate::art::{self, ArtKind};
 use super::procedural;
 
-type Key = (String, ArtKind);
+type Key = (String, ArtKind, u32);
+
+/// Variant index within a kind: heroes rotate through `hero` / `hero2` / `hero3`
+/// (see art.rs), every other kind only ever has variant 0.
+pub const PRIMARY: u32 = 0;
 
 enum Entry {
     Loading,
@@ -57,8 +61,11 @@ pub struct Textures {
     done_rx: Mutex<Receiver<Loaded>>,
     now: f64,
     /// Signature colour per (game, kind), kept after the texture itself is evicted.
-    accents: HashMap<Key, Option<Color>>,
-    scenes: HashMap<String, HeroScene>,
+    accents: HashMap<(String, ArtKind), Option<Color>>,
+    /// Per hero variant: depth cards, effect map, focal point and emitters.
+    scenes: HashMap<(String, u32), HeroScene>,
+    /// Hero variant count per game, straight from disk, cached until art changes.
+    hero_counts: HashMap<String, usize>,
     /// Generated covers for games with no art (see procedural.rs).
     fallbacks: HashMap<String, FbEntry>,
     fb_tx: Sender<FbReq>,
@@ -76,7 +83,7 @@ impl Textures {
             std::thread::spawn(move || {
                 loop {
                     let Ok(key) = rx.lock().unwrap().recv() else { break };
-                    let pixels = art::cached(&key.0, key.1)
+                    let pixels = art::cached_at(&key.0, key.1, key.2)
                         .and_then(|p| image::open(p).ok())
                         .map(|img| {
                             let rgba = img.to_rgba8();
@@ -88,10 +95,10 @@ impl Textures {
                     };
                     let scene = match (key.1, &pixels) {
                         (ArtKind::Hero, Some((w, h, px))) => {
-                            let (dw, dh, d) = super::depth::load_override(&key.0)
+                            let (dw, dh, d) = super::depth::load_override_at(&key.0, key.2)
                                 .unwrap_or_else(|| super::depth::estimate(*w, *h, px));
                             let (fx, fy) = super::depth::focal(dw, dh, &d);
-                            let seg = super::scene::load_segment(&key.0, dw, dh);
+                            let seg = super::scene::load_segment_at(&key.0, key.2, dw, dh);
                             let people = super::scene::subjects(seg.as_deref());
                             let cards = super::depth::layered(dw, dh, &d, people.as_deref());
                             let a = super::scene::analyse(*w, *h, px, dw, dh, &cards, seg.as_deref());
@@ -130,6 +137,7 @@ impl Textures {
             now: 0.0,
             accents: HashMap::new(),
             scenes: HashMap::new(),
+            hero_counts: HashMap::new(),
             fallbacks: HashMap::new(),
             fb_tx,
             fb_done_rx: Mutex::new(fb_done_rx),
@@ -138,7 +146,12 @@ impl Textures {
 
     /// Returns the texture if ready, requesting it otherwise.
     pub fn get(&mut self, id: &str, kind: ArtKind) -> Option<(Handle<Image>, UVec2)> {
-        let key = (id.to_string(), kind);
+        self.get_at(id, kind, PRIMARY)
+    }
+
+    /// As `get`, for a specific variant (heroes rotate: 0 = hero, 1 = hero2, 2 = hero3).
+    pub fn get_at(&mut self, id: &str, kind: ArtKind, variant: u32) -> Option<(Handle<Image>, UVec2)> {
+        let key = (id.to_string(), kind, variant);
         match self.map.get_mut(&key) {
             Some(Entry::Ready { handle, size, last_used }) => {
                 *last_used = self.now;
@@ -153,6 +166,19 @@ impl Textures {
         }
     }
 
+    /// A hero variant of a game (see art.rs `hero_stem`).
+    pub fn get_hero(&mut self, id: &str, variant: u32) -> Option<(Handle<Image>, UVec2)> {
+        self.get_at(id, ArtKind::Hero, variant)
+    }
+
+    /// How many hero variants a game has on disk (cached; invalidated when its art does).
+    pub fn hero_count(&mut self, id: &str) -> usize {
+        *self
+            .hero_counts
+            .entry(id.to_string())
+            .or_insert_with(|| art::hero_count(id))
+    }
+
     /// The game's signature colour (from its box art, else its hero image), once known.
     pub fn accent(&self, id: &str) -> Option<Color> {
         [ArtKind::Cover, ArtKind::Hero]
@@ -160,15 +186,19 @@ impl Textures {
             .find_map(|k| self.accents.get(&(id.to_string(), *k)).copied().flatten())
     }
 
-    /// Depth cards, effect map, focal point and emitters of a game's hero image (loaded along
-    /// with the hero).
+    /// Depth cards, effect map, focal point and emitters of a hero variant (loaded along
+    /// with it).
     pub fn scene(&self, id: &str) -> Option<HeroScene> {
-        self.scenes.get(id).cloned()
+        self.scene_at(id, PRIMARY)
+    }
+
+    pub fn scene_at(&self, id: &str, variant: u32) -> Option<HeroScene> {
+        self.scenes.get(&(id.to_string(), variant)).cloned()
     }
 
     /// True when we know this art doesn't exist (so callers can show a fallback).
     pub fn is_missing(&self, id: &str, kind: ArtKind) -> bool {
-        matches!(self.map.get(&(id.to_string(), kind)), Some(Entry::Missing))
+        matches!(self.map.get(&(id.to_string(), kind, PRIMARY)), Some(Entry::Missing))
     }
 
     /// The generated cover for a game with no art (see procedural.rs), tinted with
@@ -188,18 +218,21 @@ impl Textures {
 
     /// Forget misses for a game (new art was just downloaded).
     pub fn invalidate(&mut self, id: &str) {
-        self.map.retain(|(gid, _), e| !(gid == id && matches!(e, Entry::Missing)));
+        self.map.retain(|(gid, _, _), e| !(gid == id && matches!(e, Entry::Missing)));
         self.fallbacks.remove(id);
+        self.hero_counts.remove(id);
     }
 
     /// Drop everything loaded for a game so improved files on disk are picked up.
     pub fn reload(&mut self, id: &str) {
-        self.map.retain(|(gid, _), _| gid != id);
-        self.scenes.remove(id);
+        self.map.retain(|(gid, _, _), _| gid != id);
+        self.scenes.retain(|(gid, _), _| gid != id);
+        self.hero_counts.remove(id);
     }
 
     pub fn invalidate_all(&mut self) {
         self.map.clear();
+        self.hero_counts.clear();
     }
 }
 
@@ -222,8 +255,10 @@ pub fn pump_textures(mut tex: ResMut<Textures>, mut images: ResMut<Assets<Image>
 
     let loaded: Vec<Loaded> = tex.done_rx.lock().unwrap().try_iter().collect();
     for l in loaded {
-        if matches!(l.key.1, ArtKind::Cover | ArtKind::Hero) {
-            tex.accents.insert(l.key.clone(), l.accent);
+        // Only the primary hero tints the game (its accent and atmosphere are its own;
+        // alternates are the same game, quietly passing through).
+        if matches!(l.key.1, ArtKind::Cover | ArtKind::Hero) && l.key.2 == PRIMARY {
+            tex.accents.insert((l.key.0.clone(), l.key.1), l.accent);
         }
         if let Some(sc) = l.scene {
             let mut upload = |px: Vec<u8>| {
@@ -241,7 +276,7 @@ pub fn pump_textures(mut tex: ResMut<Textures>, mut images: ResMut<Assets<Image>
                 focal: sc.focal,
                 emitters: Arc::new(sc.emitters),
             };
-            tex.scenes.insert(l.key.0.clone(), scene);
+            tex.scenes.insert((l.key.0.clone(), l.key.2), scene);
         }
         let entry = match l.pixels {
             Some((w, h, px)) => {
@@ -262,7 +297,7 @@ pub fn pump_textures(mut tex: ResMut<Textures>, mut images: ResMut<Assets<Image>
     // Evict textures that haven't been drawn for a while (icons are cheap, keep longer).
     let now = tex.now;
     let mut dropped_heroes = Vec::new();
-    tex.map.retain(|(id, kind), e| match e {
+    tex.map.retain(|(id, kind, _), e| match e {
         Entry::Ready { last_used, .. } => {
             let ttl = if *kind == ArtKind::Icon { 300.0 } else { 20.0 };
             let keep = now - *last_used < ttl;
@@ -274,7 +309,7 @@ pub fn pump_textures(mut tex: ResMut<Textures>, mut images: ResMut<Assets<Image>
         _ => true,
     });
     for id in dropped_heroes {
-        tex.scenes.remove(&id);
+        tex.scenes.retain(|(gid, _), _| gid != &id);
     }
 }
 

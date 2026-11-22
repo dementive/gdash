@@ -51,9 +51,11 @@ pub fn subjects(seg: Option<&[u8]>) -> Option<Vec<f32>> {
     seg.map(|s| s.chunks_exact(4).map(|p| p[3] as f32 / 255.0).collect())
 }
 
-/// Loads `segment.png` resampled to the depth map's size.
-pub fn load_segment(id: &str, w: u32, h: u32) -> Option<Vec<u8>> {
-    let img = image::open(crate::art::game_dir(id).join("segment.png")).ok()?.to_rgba8();
+/// Loads the segmentation of hero `variant` (segment.png / segment2.png / segment3.png),
+/// resampled to the depth map's size.
+pub fn load_segment_at(id: &str, variant: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    let name = match variant { 1 => "segment2.png", 2 => "segment3.png", _ => "segment.png" };
+    let img = image::open(crate::art::game_dir(id).join(name)).ok()?.to_rgba8();
     Some(image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle).into_raw())
 }
 
@@ -345,8 +347,8 @@ fn dump_scene() {
     for id in ids.split(',').filter(|s| !s.is_empty()) {
         let Some(p) = crate::art::cached(id, crate::art::ArtKind::Hero) else { continue };
         let img = image::open(p).unwrap().to_rgba8();
-        let Some((w, h, d)) = super::depth::load_override(id) else { continue };
-        let seg = load_segment(id, w, h);
+        let Some((w, h, d)) = super::depth::load_override_at(id, 0) else { continue };
+        let seg = load_segment_at(id, 0, w, h);
         let people = subjects(seg.as_deref());
         let cards = super::depth::layered(w, h, &d, people.as_deref());
         let a = analyse(img.width(), img.height(), img.as_raw(), w, h, &cards, seg.as_deref());

@@ -5,6 +5,10 @@
 //! the exe's own icon. Results are resized once and cached under
 //! `%LOCALAPPDATA%\gdash\data\art\<game-id>\`. Misses leave a `<kind>.none` marker so we
 //! don't hit the network every launch (`--refresh-art` clears them).
+//!
+//! A game can also carry alternate heroes (`hero2` / `hero3`, fetched from the store's
+//! screenshots or dropped in by hand): the showcase rotates through them while the game
+//! is selected, so sitting still still changes the picture.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -68,6 +72,40 @@ pub fn cached(id: &str, kind: ArtKind) -> Option<PathBuf> {
         .iter()
         .map(|ext| dir.join(format!("{}.{ext}", kind.stem())))
         .find(|p| p.is_file())
+}
+
+/// The cached file for `kind`, `variant` 0..3 — heroes rotate: `hero` / `hero2` / `hero3`.
+pub fn cached_at(id: &str, kind: ArtKind, variant: u32) -> Option<PathBuf> {
+    match kind {
+        ArtKind::Hero => cached_hero_at(id, variant),
+        _ if variant == 0 => cached(id, kind),
+        _ => None,
+    }
+}
+
+/// Alternate heroes: the showcase quietly cross-fades between them while a game is
+/// selected (see view::update_background). Fetched from the store's screenshots, or
+/// dropped in by hand alongside the rest of a game's art. `v` is the variant index:
+/// 0 = `hero`, 1 = `hero2`, 2 = `hero3`.
+pub fn hero_stem(v: u32) -> String {
+    if v == 0 { "hero".into() } else { format!("hero{}", v + 1) }
+}
+
+pub fn cached_hero_at(id: &str, v: u32) -> Option<PathBuf> {
+    let dir = game_dir(id);
+    ["png", "jpg", "jpeg", "webp"]
+        .iter()
+        .map(|ext| dir.join(format!("{}.{ext}", hero_stem(v))))
+        .find(|p| p.is_file())
+}
+
+pub fn hero_at_missing(id: &str, v: u32) -> bool {
+    game_dir(id).join(format!("{}.none", hero_stem(v))).is_file()
+}
+
+/// How many hero variants a game has on disk (0 when it has no hero at all).
+pub fn hero_count(id: &str) -> usize {
+    (0..3).filter(|&v| cached_hero_at(id, v).is_some()).count()
 }
 
 fn marked_missing(id: &str, kind: ArtKind) -> bool {
@@ -138,7 +176,8 @@ impl Fetcher {
         Self { agent }
     }
 
-    /// Fills in whatever art is missing for `game`.
+    /// Fills in whatever art is missing for `game`, then fetches hero alternates. Returns
+    /// which of the primary kinds were found.
     pub fn fetch(&self, game: &Game) -> FetchReport {
         let dir = game_dir(&game.id);
         let _ = std::fs::create_dir_all(&dir);
@@ -157,9 +196,11 @@ impl Fetcher {
             missing.push(ArtKind::Hero);
         }
 
+        // The app id `gather` resolved, if it needed one (reused for hero alternates).
+        let mut resolved = None;
         if !missing.is_empty() {
             let mut sources = Sources::default();
-            self.gather(game, &missing, &mut sources);
+            resolved = self.gather(game, &missing, &mut sources);
             for kind in missing {
                 if kind == ArtKind::Hero {
                     if let Some(old_w) = old_hero_w {
@@ -183,6 +224,34 @@ impl Fetcher {
             }
         }
 
+        // Hero variety: a couple of the store's screenshots become quiet alternates
+        // (hero2 / hero3) that the showcase rotates through while the game is selected.
+        // Only for games with a hero and a Steam-resolvable id; misses are marked like
+        // any other kind, so `--refresh-art` clears them along with the rest.
+        let alts: Vec<u32> = [1, 2]
+            .into_iter()
+            .filter(|&v| cached_hero_at(&game.id, v).is_none() && !hero_at_missing(&game.id, v))
+            .collect();
+        if !alts.is_empty() && cached(&game.id, ArtKind::Hero).is_some() {
+            if let Some(appid) = resolved.or_else(|| self.resolve_appid(game)) {
+                let shots = self.store_screenshots(appid).unwrap_or_default();
+                // The first screenshot is usually the hero's own key art; skip it when
+                // there's plenty to choose from.
+                let pool: Vec<&String> = if shots.len() > 3 { shots[1..].iter().collect() } else { shots.iter().collect() };
+                for (i, &v) in alts.iter().enumerate() {
+                    let ok = pool
+                        .get(i)
+                        .and_then(|u| self.get_image(u))
+                        .filter(|img| img.width() >= 1280 && img.height() >= 720)
+                        .map(|img| save_jpg(&dir, &hero_stem(v), &img, 3840, 2160, 95).is_ok())
+                        .unwrap_or(false);
+                    if !ok {
+                        let _ = std::fs::write(dir.join(format!("{}.none", hero_stem(v))), b"");
+                    }
+                }
+            }
+        }
+
         FetchReport {
             id: game.id.clone(),
             title: game.title.clone(),
@@ -190,7 +259,20 @@ impl Fetcher {
         }
     }
 
-    fn gather(&self, game: &Game, missing: &[ArtKind], src: &mut Sources) {
+    /// The Steam app id to use for `game`'s art: its own id when the store name matches
+    /// (ids from steam_appid.txt next to a PC game are often a DLC or test id), else the
+    /// best store search hit.
+    fn resolve_appid(&self, game: &Game) -> Option<u32> {
+        let known = game.steam_appid.filter(|&id| {
+            game.system == System::Steam || self.app_name(id).is_some_and(|n| titles_match(&game.title, &n))
+        });
+        known.or_else(|| {
+            let strict = game.system != System::Pc;
+            self.store_search(&game.title, strict)
+        })
+    }
+
+    fn gather(&self, game: &Game, missing: &[ArtKind], src: &mut Sources) -> Option<u32> {
         let wants = |k: ArtKind| missing.contains(&k);
         let mut local_hero = None;
 
@@ -230,17 +312,9 @@ impl Fetcher {
         let need_steam = [ArtKind::Cover, ArtKind::Hero, ArtKind::Logo]
             .iter()
             .any(|&k| wants(k) && src.get(k).is_none());
+        let mut resolved = None;
         if need_steam {
-            // Ids from steam_appid.txt next to a PC game are often a DLC or test id, so
-            // only trust them when the store name matches the title.
-            let known = game.steam_appid.filter(|&id| {
-                game.system == System::Steam || self.app_name(id).is_some_and(|n| titles_match(&game.title, &n))
-            });
-            let appid = known.or_else(|| {
-                let strict = game.system != System::Pc;
-                self.store_search(&game.title, strict)
-            });
-            if let Some(appid) = appid {
+            if let Some(appid) = self.resolve_appid(game) {
                 // Newer apps keep art under hashed paths that only the store API knows.
                 let assets = self.store_assets(appid);
                 let pick = |names: &[&str]| -> Vec<String> {
@@ -281,6 +355,7 @@ impl Fetcher {
                         ));
                     }
                 }
+                resolved = Some(appid);
             }
         }
 
@@ -297,6 +372,21 @@ impl Fetcher {
                 .libretro(game, "Named_Snaps")
                 .or_else(|| self.libretro(game, "Named_Titles"));
         }
+
+        resolved
+    }
+
+    /// The store's full-size screenshots for an app id, via the appdetails
+    /// `screenshots` filter (in-game shots — hero-grade art, no extra page fetch).
+    fn store_screenshots(&self, appid: u32) -> Option<Vec<String>> {
+        let url = format!(
+            "https://store.steampowered.com/api/appdetails?appids={appid}&cc=US&l=english&filters=screenshots"
+        );
+        let mut resp = self.agent.get(&url).call().ok()?;
+        let text = resp.body_mut().read_to_string().ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let shots = v.get(appid.to_string())?.get("data")?.get("screenshots")?.as_array()?;
+        Some(shots.iter().filter_map(|s| s.get("path_full")?.as_str().map(str::to_string)).collect())
     }
 
     fn get_image(&self, url: &str) -> Option<DynamicImage> {
@@ -539,6 +629,19 @@ fn save(dir: &Path, kind: ArtKind, img: &DynamicImage) -> image::ImageResult<()>
     }
 }
 
+/// Saves `img` as `<stem>.jpg` under `dir`, downscaled to fit (`mw` × `mh`): the JPEG
+/// half of `save`, for art files that aren't an `ArtKind` (hero alternates).
+fn save_jpg(dir: &Path, stem: &str, img: &DynamicImage, mw: u32, mh: u32, quality: u8) -> image::ImageResult<()> {
+    let img = if img.width() > mw || img.height() > mh {
+        img.resize(mw, mh, image::imageops::FilterType::CatmullRom)
+    } else {
+        img.clone()
+    };
+    let file = std::fs::File::create(dir.join(format!("{stem}.jpg")))?;
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(file, quality);
+    enc.encode_image(&img.to_rgb8())
+}
+
 /// Name variants to try against libretro's No-Intro / Redump based file names.
 pub fn libretro_candidates(raw: &str) -> Vec<String> {
     let mut out = vec![raw.to_string()];
@@ -612,5 +715,12 @@ mod tests {
     #[test]
     fn encodes() {
         assert_eq!(url_encode("A B's (USA)"), "A%20B%27s%20%28USA%29");
+    }
+
+    #[test]
+    fn hero_variant_stems() {
+        assert_eq!(hero_stem(0), "hero");
+        assert_eq!(hero_stem(1), "hero2");
+        assert_eq!(hero_stem(2), "hero3");
     }
 }

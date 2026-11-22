@@ -286,7 +286,7 @@ impl Dash {
                 detail: "Search again for box art, backgrounds, logos and icons that weren't found before, \
                          and retry controller-support lookups that came back unknown. \
                          To use your own image, put cover.jpg / hero.jpg / logo.png / icon.png in the \
-                         game's art folder."
+                         game's art folder (hero2.jpg / hero3.jpg add rotating background alternates)."
                     .into(),
             },
             Entry {

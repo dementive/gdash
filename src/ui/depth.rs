@@ -219,9 +219,11 @@ fn max_filter(v: &mut [f32], w: usize, h: usize, r: usize) {
     }
 }
 
-/// Loads a user/model supplied depth map, if the game has one.
-pub fn load_override(id: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let p = crate::art::game_dir(id).join("depth.png");
+/// Loads a user/model supplied depth map for hero `variant` (depth.png / depth2.png /
+/// depth3.png), if the game has one.
+pub fn load_override_at(id: &str, variant: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let name = match variant { 1 => "depth2.png", 2 => "depth3.png", _ => "depth.png" };
+    let p = crate::art::game_dir(id).join(name);
     let img = image::open(p).ok()?.to_luma8();
     let (w, h) = img.dimensions();
     Some((w, h, img.into_raw().into_iter().flat_map(|g| [g, g, g, 255]).collect()))
@@ -335,10 +337,10 @@ fn dump_depth() {
     for id in ids.split(',').filter(|s| !s.is_empty()) {
         let Some(p) = crate::art::cached(id, crate::art::ArtKind::Hero) else { continue };
         let img = image::open(p).unwrap().to_rgba8();
-        let (w, h, d) = load_override(id).unwrap_or_else(|| estimate(img.width(), img.height(), img.as_raw()));
+        let (w, h, d) = load_override_at(id, 0).unwrap_or_else(|| estimate(img.width(), img.height(), img.as_raw()));
         let cards = layered(w, h, &d, None);
-        image::RgbaImage::from_raw(w, h, d).unwrap().save(out.join(format!("{id}-depth.png"))).unwrap();
-        image::RgbaImage::from_raw(w, h, cards).unwrap().save(out.join(format!("{id}-cards.png"))).unwrap();
+        image::RgbaImage::from_raw(w, h, d.to_vec()).unwrap().save(out.join(format!("{id}-depth.png"))).unwrap();
+        image::RgbaImage::from_raw(w, h, cards.to_vec()).unwrap().save(out.join(format!("{id}-cards.png"))).unwrap();
         image::imageops::thumbnail(&img, 480, 480 * img.height() / img.width()).save(out.join(format!("{id}-hero.png"))).unwrap();
     }
 }

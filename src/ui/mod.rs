@@ -161,7 +161,7 @@ pub fn run(opts: Options, cfg: Config) {
                 view::update_background,
                 particles::update_particles,
                 (view::update_chrome, view::update_launch_splash).chain(),
-                (glass::update_glass, glass::animate_cards),
+                (view::update_details_sheet, glass::update_glass, glass::animate_cards),
                 view::animate_prompts,
                 textures::pump_textures,
             )

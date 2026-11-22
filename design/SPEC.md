@@ -50,7 +50,11 @@ is 1600 × 900 canvas px. The side margin is 72.
 5. **Count** `3 / 12`, right-aligned above the shelf.
 6. **Prompts** (bottom 24, 15 px, 70%): A Play · B Back · Y Details · ≡ Guide.
 7. **Overlays**
-   - Details sheet (right side, glass).
+   - Details sheet (right side, glass). The game's art as a living card at the top —
+     cover-fit, drifting slowly around the scene's focal point, revealing as the glass
+     racks in — then the title, the meta line and typographic rows: SYSTEM, CONTROLLER
+     (with a three-notch meter), LAST PLAYED, LOCATION. Wishlist items show STATUS,
+     SOURCE and LINK instead. The config id sits under the rows, dim.
    - Guide (center, glass).
    - Toast.
    - Now playing.
@@ -92,6 +96,11 @@ leads with the verdict. Games with no support or unknown ones stay off the tab.
 - **Category change:** the new shelf rises 60 px and fades in, staggered 40 ms per tile. The
   info block slides 16 px from the left and fades in over 250 ms. The new hero enters from
   the side you moved and settles; the old one slides out of its way.
+- **Hero variety:** a game can carry alternate heroes (`hero2` / `hero3` in its art folder —
+  fetched from the store's screenshots, or dropped in by hand). While a game stays selected
+  and nothing is open, its hero quietly cross-fades to the next alternate every ~13 s — no
+  direction, the same motion style and atmosphere, the usual front-to-back dissolve. Overlays
+  pause it; a launch owns the screen.
 - **Startup:** fade in from black over 0.6 s, with the same shelf rise.
 
 ## Type

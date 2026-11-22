@@ -116,4 +116,11 @@ pub struct HeroFade {
     /// -1, 0 or 1: the direction the last swap came from (Q/E and shelf moves). The
     /// new hero enters from that side; the old one gives way to it.
     pub dir: f32,
+    /// Which hero variant is in slot b (0 = hero, 1 = hero2, 2 = hero3): hero variety
+    /// rotates the current game's alternates in place while it stays selected.
+    pub variant: u32,
 }
+
+/// Seconds the current hero shows before rotating to an alternate of the same game
+/// (see view::update_background). Long enough that a browse-through never triggers it.
+pub const HERO_SWAP_SECS: f32 = 13.0;

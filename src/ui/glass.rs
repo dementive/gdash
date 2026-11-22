@@ -22,6 +22,7 @@ use super::view::{approach, ease};
 
 pub const GLASS_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("8a2c6f0e-5b41-4d3a-9c72-1e4f8d5a6b03");
 pub const SHIMMER_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("c7d94e21-8f36-4b15-a2c9-60d8e3f41b27");
+pub const ART_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("b1d3a7c2-9e46-4f85-8a20-5c7e9d4f6a13");
 
 #[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
 pub struct GlassMaterial {
@@ -53,6 +54,24 @@ impl UiMaterial for ShimmerMaterial {
     }
 }
 
+/// The details sheet's art header (see artcard.wesl): one shared material whose hero
+/// texture, focal point and reveal are rewritten as the selection moves.
+#[derive(AsBindGroup, Asset, TypePath, Debug, Clone)]
+pub struct ArtCardMaterial {
+    /// x: time, y: reveal (0..1), z/w: the focal point (uv) the drift circles.
+    #[uniform(0)]
+    pub params: Vec4,
+    #[texture(1)]
+    #[sampler(2)]
+    pub hero: Handle<Image>,
+}
+
+impl UiMaterial for ArtCardMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(ART_SHADER)
+    }
+}
+
 /// The offscreen camera that draws the background copy.
 #[derive(Component)]
 pub struct GlassCam;
@@ -67,6 +86,8 @@ pub struct GlassCard;
 #[derive(Resource)]
 pub struct Glass {
     pub mat: Handle<GlassMaterial>,
+    /// The details sheet's art header material (updated by view::update_details_sheet).
+    pub art: Handle<ArtCardMaterial>,
     target: Handle<Image>,
     size: UVec2,
     /// Smoothed 0..1 with the guide / details sheet.
@@ -77,12 +98,15 @@ pub fn register(app: &mut App) {
     app.add_plugins((
         UiMaterialPlugin::<GlassMaterial>::default(),
         UiMaterialPlugin::<ShimmerMaterial>::default(),
+        UiMaterialPlugin::<ArtCardMaterial>::default(),
     ));
     let glass = Shader::from_wesl(include_str!("shaders/glass.wesl"), "gdash/glass.wesl");
     let shimmer = Shader::from_wesl(include_str!("shaders/shimmer.wesl"), "gdash/shimmer.wesl");
+    let art = Shader::from_wesl(include_str!("shaders/artcard.wesl"), "gdash/artcard.wesl");
     let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
     let _ = shaders.insert(GLASS_SHADER.id(), glass);
     let _ = shaders.insert(SHIMMER_SHADER.id(), shimmer);
+    let _ = shaders.insert(ART_SHADER.id(), art);
 }
 
 /// Quarter of the window — plenty for a blur that will soften it further anyway.
@@ -99,6 +123,7 @@ pub fn spawn(
     commands: &mut Commands,
     images: &mut Assets<Image>,
     mats: &mut Assets<GlassMaterial>,
+    art_mats: &mut Assets<ArtCardMaterial>,
     bg: Handle<super::background::BgMaterial>,
     mesh: Handle<Mesh>,
     window: Option<&Window>,
@@ -124,6 +149,7 @@ pub fn spawn(
     ));
     Glass {
         mat: mats.add(GlassMaterial { params: Vec4::ZERO, backdrop: target.clone() }),
+        art: art_mats.add(ArtCardMaterial { params: Vec4::ZERO, hero: Handle::default() }),
         target,
         size,
         reveal: 0.0,

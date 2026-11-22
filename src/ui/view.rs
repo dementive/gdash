@@ -90,6 +90,18 @@ pub struct GuideOverlay;
 pub struct GuideRow(pub usize);
 #[derive(Component)]
 pub struct DetailsSheet;
+/// The details sheet's art header (a MaterialNode with the art card material).
+#[derive(Component)]
+pub struct DetArt;
+/// One metadata row of the details sheet (label line + value text).
+#[derive(Component)]
+pub struct DetRow(pub u8);
+/// The three-notch controller support meter on the CONTROLLER row.
+#[derive(Component)]
+pub struct DetMeter;
+/// One notch of the meter (0 = leftmost).
+#[derive(Component)]
+pub struct Notch(pub u8);
 #[derive(Component)]
 pub struct Toast;
 #[derive(Component)]
@@ -117,7 +129,12 @@ pub enum Slot {
     Toast,
     Running,
     DetTitle,
-    DetBody,
+    DetMeta,
+    /// Small-caps row label (index into the details sheet's rows).
+    DetLbl(u8),
+    /// Row value (index into the details sheet's rows).
+    DetVal(u8),
+    DetId,
 }
 
 /// Shelf scroll position.
@@ -408,6 +425,7 @@ pub fn spawn_static(
     mut mats: ResMut<Assets<BgMaterial>>,
     mut pmats: ResMut<Assets<super::particles::ParticleMaterial>>,
     mut glass_mats: ResMut<Assets<super::glass::GlassMaterial>>,
+    mut art_mats: ResMut<Assets<super::glass::ArtCardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -449,6 +467,7 @@ pub fn spawn_static(
         &mut commands,
         &mut images,
         &mut glass_mats,
+        &mut art_mats,
         bg,
         mesh,
         windows.single().ok(),
@@ -675,7 +694,7 @@ fn glass_card(width: f32, glass: &Glass) -> impl Bundle {
 }
 
 fn spawn_overlays(commands: &mut Commands, glass: &Glass) {
-    // Details sheet (right side).
+    // Details sheet (right side): a living piece of the game's art over typographic rows.
     commands
         .spawn((
             DetailsSheet,
@@ -695,15 +714,100 @@ fn spawn_overlays(commands: &mut Commands, glass: &Glass) {
         ))
         .with_children(|o| {
             o.spawn(glass_card(560.0, glass)).with_children(|c| {
+                // The game's art, cover-fit and drifting around its focal point
+                // (artcard.wesl). It stays fully transparent until art resolves,
+                // then reveals as the sheet racks in.
+                c.spawn((
+                    DetArt,
+                    Node {
+                        width: percent(100),
+                        height: px(216),
+                        border_radius: BorderRadius::all(px(12)),
+                        ..default()
+                    },
+                    MaterialNode(glass.art.clone()),
+                    Pickable::IGNORE,
+                ));
                 c.spawn((Slot::DetTitle, Text::new(""), theme::font(30.0, FontWeight::SEMIBOLD), TextColor(WHITE)));
                 c.spawn((
-                    Slot::DetBody,
+                    Slot::DetMeta,
                     Text::new(""),
                     theme::font(17.0, FontWeight::NORMAL),
-                    TextColor(Color::srgba(1.0, 1.0, 1.0, 0.82)),
-                    Node { margin: UiRect::top(px(14)), ..default() },
+                    TextColor(Color::srgba(1.0, 1.0, 1.0, 0.75)),
+                    Node { margin: UiRect::top(px(6)), ..default() },
                 ));
-                c.spawn(Node { column_gap: px(22), margin: UiRect::top(px(22)), ..default() }).with_children(|r| {
+                // Metadata rows: a small-caps label line (the CONTROLLER row also
+                // carries the notch meter) with the value under it, wrapping freely.
+                for i in 0..4u8 {
+                    c.spawn((
+                        DetRow(i),
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            margin: UiRect::top(px(13)),
+                            ..default()
+                        },
+                    ))
+                        .with_children(|r| {
+                            r.spawn((
+                                Node {
+                                    justify_content: JustifyContent::SpaceBetween,
+                                    align_items: AlignItems::Center,
+                                    ..default()
+                                },
+                                Pickable::IGNORE,
+                            ))
+                            .with_children(|h| {
+                                let label = theme::font(13.0, FontWeight::SEMIBOLD);
+                                h.spawn((
+                                    Slot::DetLbl(i),
+                                    Text::new(""),
+                                    label,
+                                    // Small uppercase labels loosen their tracking, as the mockup does.
+                                    theme::tracking(1.4),
+                                    TextColor(Color::srgba(1.0, 1.0, 1.0, 0.5)),
+                                    Pickable::IGNORE,
+                                ));
+                                if i == 1 {
+                                    h.spawn((
+                                        DetMeter,
+                                        Node { column_gap: px(5), ..default() },
+                                        Pickable::IGNORE,
+                                    ))
+                                    .with_children(|m| {
+                                        for n in 0..3u8 {
+                                            m.spawn((
+                                                Notch(n),
+                                                Node {
+                                                    width: px(20),
+                                                    height: px(5),
+                                                    border_radius: BorderRadius::all(px(2.5)),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.2)),
+                                                Pickable::IGNORE,
+                                            ));
+                                        }
+                                    });
+                                }
+                            });
+                            r.spawn((
+                                Slot::DetVal(i),
+                                Text::new(""),
+                                theme::font(16.5, FontWeight::NORMAL),
+                                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                                Node { margin: UiRect::top(px(4)), ..default() },
+                                Pickable::IGNORE,
+                            ));
+                        });
+                }
+                c.spawn((
+                    Slot::DetId,
+                    Text::new(""),
+                    theme::font(12.5, FontWeight::SEMIBOLD),
+                    TextColor(Color::srgba(1.0, 1.0, 1.0, 0.42)),
+                    Node { margin: UiRect::top(px(13)), ..default() },
+                ));
+                c.spawn(Node { column_gap: px(22), margin: UiRect::top(px(18)), ..default() }).with_children(|r| {
                     prompt(r, &[Glyph::Face("A", BTN_A)], &[Glyph::Key("Enter")], "Play", 0.0, Some(Slot::PlayLabel));
                     prompt(r, &[Glyph::Face("B", BTN_B)], &[Glyph::Key("Bksp")], "Close", 1.0, None);
                 });
@@ -1524,6 +1628,7 @@ pub fn update_background(
                     fade.b = Some(HeroSlot { id: id.clone(), image, size, scene, age: 0.0 });
                     fade.t = 0.0;
                     fade.dir = dir;
+                    fade.variant = 0;
                 } else if tex.is_missing(id, ArtKind::Hero) && fade.b.is_some() {
                     fade.a = fade.b.take();
                     fade.t = 0.0;
@@ -1539,18 +1644,39 @@ pub fn update_background(
             }
         }
     } else if let Some(id) = current_id {
-        // Keeps it resident; a different handle means the art was just improved on disk,
-        // so cross-fade to the new version.
-        if let Some((image, size)) = tex.get(&id, ArtKind::Hero) {
+        // Keeps the current variant resident; a different handle means the art changed
+        // on disk (improved by the enhancer, or edited by hand), so cross-fade to it.
+        if let Some((image, size)) = tex.get_hero(&id, fade.variant) {
             if fade.b.as_ref().is_some_and(|b| b.image != image) {
-                let scene = tex.scene(&id);
+                let scene = tex.scene_at(&id, fade.variant);
                 fade.a = fade.b.take();
                 fade.b = Some(HeroSlot { id: id.clone(), image, size, scene, age: 0.0 });
                 fade.t = 0.0;
             }
         }
+        let variant = fade.variant;
         if let Some(b) = fade.b.as_mut().filter(|b| b.scene.is_none()) {
-            b.scene = tex.scene(&id);
+            b.scene = tex.scene_at(&id, variant);
+        }
+        // Hero variety: alternate heroes (the store's screenshots, or your own hero2 /
+        // hero3) rotate in while you sit on a game — a quiet in-place cross-fade with
+        // no direction, through the same front-to-back dissolve as a selection change.
+        // Only while browsing: overlays hide the picture, and a launch owns the screen.
+        let b_age = fade.b.as_ref().map_or(0.0, |b| b.age);
+        if dash.mode == Mode::Browse && fx.launch.is_none() && b_age > super::background::HERO_SWAP_SECS {
+            let count = tex.hero_count(&id) as u32;
+            if count > 1 {
+                let next = (fade.variant + 1) % count;
+                if let Some((image, size)) = tex.get_hero(&id, next) {
+                    let scene = tex.scene_at(&id, next);
+                    fade.a = fade.b.take();
+                    fade.b = Some(HeroSlot { id: id.clone(), image, size, scene, age: 0.0 });
+                    fade.t = 0.0;
+                    // A pure dissolve in place, not a slide from wherever you last moved.
+                    fade.dir = 0.0;
+                    fade.variant = next;
+                }
+            }
         }
     }
     fade.t = (fade.t + dt / 0.8).min(1.0);
@@ -1692,33 +1818,51 @@ fn hero_motion(id: &str, age: f32, look: Vec2) -> HeroMotion {
 
 // ---------- chrome & overlays ----------
 
-fn details_text(g: &Game) -> String {
+/// The CONTROLLER row's verdict and meter level: (text, notches lit, show the meter).
+fn controller_row(g: &Game) -> (String, Option<u8>) {
+    match g.controller {
+        Some(ControllerSupport::Full) => {
+            ("Full support — plays start to finish on a gamepad.".into(), Some(3))
+        }
+        Some(ControllerSupport::Partial) => {
+            ("Partial — you may still need a keyboard and mouse for some menus or actions.".into(), Some(2))
+        }
+        Some(ControllerSupport::None) => {
+            ("None listed — expect keyboard and mouse. Steam Input may still make it playable.".into(), Some(0))
+        }
+        None => (
+            format!(
+                "Unknown — still being looked up, or nothing was found.\n\
+                 If you know better, set controller = \"full\" under [overrides.{}] in config.toml.",
+                g.id
+            ),
+            None,
+        ),
+    }
+}
+
+/// The metadata rows of the details sheet, per entry kind: (label, value), then which
+/// rows to hide (the sheet always builds four).
+fn details_rows(g: &Game) -> ([(String, String); 4], [bool; 4], Option<u8>) {
     if let Launch::Url { url } = &g.launch {
-        return format!(
-            "STATUS\nNot downloaded yet\n\nSOURCE\n{}\n{url}\n\nID (for config overrides)\n{}",
-            crate::library::wishlist::source_host(url),
-            g.id
+        return (
+            [
+                ("STATUS".into(), "Not downloaded yet".into()),
+                ("SOURCE".into(), crate::library::wishlist::source_host(url).into()),
+                ("LINK".into(), url.clone()),
+                (String::new(), String::new()),
+            ],
+            [true, true, true, false],
+            None,
         );
     }
     let played = g.last_played.map(super::state::ago).unwrap_or_else(|| "Never".into());
-    let controller = match g.controller {
-        Some(ControllerSupport::Full) => {
-            "Full support — plays start to finish on a gamepad.".to_string()
-        }
-        Some(ControllerSupport::Partial) => {
-            "Partial — you may still need a keyboard and mouse for some menus or actions.".into()
-        }
-        Some(ControllerSupport::None) => {
-            "None listed — expect keyboard and mouse. Steam Input may still make it playable.".into()
-        }
-        None => format!(
-            "Unknown — still being looked up, or nothing was found.\n\
-             If you know better, set controller = \"full\" under [overrides.{}] in config.toml.",
-            g.id
-        ),
-    };
+    let (controller, meter) = controller_row(g);
     let (location, how) = match &g.launch {
-        Launch::Steam { appid, install_dir } => (install_dir.display().to_string(), format!("Steam (app {appid})")),
+        Launch::Steam { appid, install_dir } => {
+            let loc = install_dir.display().to_string();
+            (loc, format!("Steam (app {appid})"))
+        }
         Launch::Url { url } => (url.clone(), "Wishlist page".into()),
         Launch::Exe { exe, args, watch_dir, .. } => {
             let loc = watch_dir.clone().unwrap_or_else(|| {
@@ -1731,11 +1875,111 @@ fn details_text(g: &Game) -> String {
             (loc.display().to_string(), how)
         }
     };
-    format!(
-        "SYSTEM\n{}\n\nCONTROLLER\n{controller}\n\nLAST PLAYED\n{played}\n\nLOCATION\n{location}\n\nLAUNCHES WITH\n{how}\n\nID (for config overrides)\n{}",
-        g.system.label(),
-        g.id
+    // The location and how it launches, as one value (skipping a repeated line).
+    let loc_val = if location == how || how.is_empty() {
+        location
+    } else if location.is_empty() {
+        how
+    } else {
+        format!("{location}\n{how}")
+    };
+    (
+        [
+            ("SYSTEM".into(), g.system.label().into()),
+            ("CONTROLLER".into(), controller),
+            ("LAST PLAYED".into(), played),
+            ("LOCATION".into(), loc_val),
+        ],
+        [true, true, true, true],
+        meter,
     )
+}
+
+/// The details sheet: the game's art as a living card at the top (artcard.wesl), then
+/// the title, meta and typographic rows. Runs alongside update_chrome, which still
+/// owns the sheet's visibility.
+#[allow(clippy::type_complexity)]
+pub fn update_details_sheet(
+    dash: Res<Dash>,
+    lib: Res<Library>,
+    mut tex: ResMut<Textures>,
+    glass: Res<Glass>,
+    mut art_mats: ResMut<Assets<super::glass::ArtCardMaterial>>,
+    time: Res<Time>,
+    // (the game id whose art is on the card, the card's reveal 0..1)
+    mut state: Local<(String, f32)>,
+    mut slots: Query<(&Slot, &mut Text, &mut TextColor)>,
+    // The meter and its notches are children of a row, so `Without` filters keep the
+    // Node accesses here disjoint.
+    mut rows: Query<(&DetRow, &mut Node), (Without<DetMeter>, Without<Notch>)>,
+    mut notches: Query<(&Notch, &mut BackgroundColor), Without<DetRow>>,
+    mut meter_wrap: Query<&mut Node, (With<DetMeter>, Without<DetRow>, Without<Notch>)>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    let game = if dash.mode == Mode::Details {
+        dash.selected().and_then(|e| game_of(&lib, e)).cloned()
+    } else {
+        None
+    };
+
+    // The art card: hero → box art → generated fallback. One shared material, whose
+    // reveal restarts whenever a different game sits behind the sheet (and decays while
+    // the sheet is away, so the art settles in again on the next open).
+    if let Some(g) = &game {
+        if state.0 != g.id {
+            state.0 = g.id.clone();
+            state.1 = 0.0;
+        }
+    } else if state.1 > 0.0 {
+        state.1 = approach(state.1, 0.0, 10.0, dt);
+    }
+    if let Some(g) = &game {
+        let accent = tex.accent(&g.id).unwrap_or_else(|| dash.blade().color);
+        let mut source: Option<(Handle<Image>, Vec2)> = None;
+        if let Some((h, _)) = tex.get(&g.id, ArtKind::Hero) {
+            let focal = tex.scene(&g.id).map(|s| s.focal).unwrap_or(Vec2::new(0.5, 0.4));
+            source = Some((h, focal));
+        } else if let Some((h, _)) = tex.get(&g.id, ArtKind::Cover) {
+            source = Some((h, Vec2::new(0.5, 0.45)));
+        } else if let Some(h) = tex.fallback(&g.id, accent) {
+            source = Some((h, Vec2::new(0.5, 0.45)));
+        }
+        // The card reveals only once something to show has resolved.
+        state.1 = approach(state.1, source.is_some() as u32 as f32, 6.0, dt);
+        if let Some(mut m) = art_mats.get_mut(&glass.art) {
+            if let Some((h, focal)) = &source {
+                if m.hero != *h {
+                    m.hero = h.clone();
+                }
+                m.params = Vec4::new(time.elapsed_secs(), ease(state.1), focal.x, focal.y);
+            }
+        }
+
+        // The rows, per entry kind (games and wishlist pages differ).
+        let (rows_content, show, meter) = details_rows(g);
+        let meta = game_meta(g);
+        for (slot, mut text, _) in &mut slots {
+            match slot {
+                Slot::DetTitle => set_text(&mut text, &g.title),
+                Slot::DetMeta => set_text(&mut text, &meta),
+                Slot::DetLbl(i) => set_text(&mut text, &rows_content[*i as usize].0),
+                Slot::DetVal(i) => set_text(&mut text, &rows_content[*i as usize].1),
+                Slot::DetId => set_text(&mut text, &format!("ID (for config overrides)  ·  {}", g.id)),
+                _ => {}
+            }
+        }
+        for (row, mut node) in &mut rows {
+            set_display(&mut node, show[row.0 as usize]);
+        }
+        for (notch, mut color) in &mut notches {
+            let lit = meter.is_some_and(|level| notch.0 < level);
+            let c = if lit { Color::srgba(1.0, 1.0, 1.0, 0.9) } else { Color::srgba(1.0, 1.0, 1.0, 0.2) };
+            set_color(&mut color, BackgroundColor(c));
+        }
+        if let Ok(mut n) = meter_wrap.single_mut() {
+            set_display(&mut n, meter.is_some());
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1806,11 +2050,6 @@ pub fn update_chrome(
             Slot::Running => {
                 set_text(&mut text, running_text.as_deref().unwrap_or(""));
                 set_color(&mut color, TextColor(Color::srgba(0.97, 0.98, 1.0, reveal)));
-            }
-            Slot::DetTitle => set_text(&mut text, selected_game.as_ref().map(|g| g.title.as_str()).unwrap_or("")),
-            Slot::DetBody => {
-                let s = selected_game.as_ref().map(details_text).unwrap_or_default();
-                set_text(&mut text, &s);
             }
             _ => {}
         }
