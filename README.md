@@ -138,11 +138,15 @@ the UI stays sharp. Each game gets:
 
 After fetching art, the dashboard runs `gdash --enhance-art` as a hidden, low-priority child
 process (so the models' memory never stays in the dashboard) and cross-fades improved art in as
-it finishes. Each image is processed once, on the CPU:
+it finishes. If the dashboard exits before the queue is done, the child carries on alone and
+finishes the list; the next start finds the work already there. Each image is processed once,
+on the CPU:
 
-- **Depth** — [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small)
-  (Apache-2.0, int8, 27 MB) writes `depth.png` for every hero; it picks the focal point and drives the layered motion and relighting
-  (about 0.6 s per image).
+- **Depth** — [Depth Anything V3 Small](https://huggingface.co/onnx-community/depth-anything-v3-small)
+  (Apache-2.0, 105 MB with its companion weights) writes `depth.png` for every hero; it picks the focal point and drives the layered motion and relighting
+  (about 2 s per image). The map is stretched by robust percentiles and smoothed edge-aware — flat inside subjects, sharp at their boundaries — so the
+  depth cards cut clean. Each map records the model that wrote it (`depth.model`); a future model swap regenerates old maps, while a hand-dropped
+  `depth.png` always wins.
 - **Segmentation** — [SegFormer-B0 (ADE20K)](https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512)
   (NVIDIA SegFormer licence, ONNX export by Xenova, 15 MB) writes `segment.png` (sky, water,
   foliage, people) for every hero in overlapping square crops (about 0.4 s per image). It

@@ -1,6 +1,6 @@
 //! On-device ML improvements to cached artwork, run once per image:
 //!
-//! - **Depth**: Depth Anything V2 (small) turns each hero image into `depth.png`, which drives
+//! - **Depth**: Depth Anything 3 (small) turns each hero image into `depth.png`, which drives
 //!   the moving background (white = near).
 //! - **Segmentation**: SegFormer-B0 (ADE20K) finds sky, water, foliage and people, saved as
 //!   `segment.png` (R sky, G water, B foliage, A people/animals). The dashboard uses it to make
@@ -28,10 +28,21 @@ use crate::art::{self, ArtKind};
 use crate::library::Game;
 use crate::paths;
 
-/// Depth Anything V2 Small (Apache-2.0), int8 ONNX export by onnx-community.
-const DEPTH_URL: &str = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/4472b7362082ad9968fee890ca0f1e5aca36b93d/onnx/model_int8.onnx";
-const DEPTH_SHA: &str = "01aa7a23de3f4a0ee1a2bb9997e6918104c85a9f95dea46d27b9b3fb0c6b9001";
-const DEPTH_FILE: &str = "depth-anything-v2-small-int8.onnx";
+/// Depth Anything V3 Small (Apache-2.0), ONNX export by onnx-community. Its weights live
+/// in a companion file the graph references by name (see `DEPTH_DATA_FILE`).
+const DEPTH_URL: &str = "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/0b6a7f3bf5595f9950b91389e0da3a0de130324c/onnx/model.onnx";
+const DEPTH_SHA: &str = "396008798244a074297fd88e450433b1357fc687f534939375c804ded86e7b2a";
+const DEPTH_FILE: &str = "depth-anything-v3-small.onnx";
+/// The graph's external weights. The file name must stay exactly what the graph
+/// references, or it will not load — hence the generic name, pinned by hash like the rest.
+const DEPTH_DATA_URL: &str = "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/0b6a7f3bf5595f9950b91389e0da3a0de130324c/onnx/model.onnx_data";
+const DEPTH_DATA_SHA: &str = "802bb24741e67f5bb2b369fc64d40afe11439cc895d676d658d65cfb75c9860f";
+const DEPTH_DATA_FILE: &str = "model.onnx_data";
+/// Name of the depth model recorded in each game's art folder when its `depth.png` was
+/// generated, so a model swap regenerates old maps. A `depth.png` without the marker is
+/// the user's own and always wins.
+const DEPTH_MODEL_FILE: &str = "depth.model";
+const DEPTH_MODEL: &str = "depth-anything-v3-small";
 
 /// SegFormer-B0 fine-tuned on ADE20K (150 classes), ONNX export by Xenova.
 const SEG_URL: &str = "https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512/resolve/d3e5499fa8701ff0453ca940a8dfeae39b2f1504/onnx/model.onnx";
@@ -57,8 +68,9 @@ const SR_OVERLAP: usize = 16;
 
 /// Heroes shorter than this get upscaled (Steam's 2x heroes are 1240 tall and are left alone).
 const SR_BELOW_H: u32 = 1000;
-/// Depth inference resolution (short side, a multiple of 14).
-const DEPTH_SHORT: u32 = 392;
+/// Depth inference resolution (short side, a multiple of 14). 518 is DA3's native patch
+/// grid (37 x 14); wider heroes keep their aspect ratio.
+const DEPTH_SHORT: u32 = 518;
 
 /// What changed for a game.
 pub struct Enhanced {
@@ -92,8 +104,22 @@ fn todo(game: &Game) -> Todo {
     let broken = dir.join("depth.none").exists();
     Todo {
         sr: !dir.join("hero.sr").exists() && image::image_dimensions(&hero).is_ok_and(|(_, h)| h < SR_BELOW_H),
-        depth: !dir.join("depth.png").exists() && !broken,
+        depth: !depth_done(&dir) && !broken,
         segment: !dir.join("segment.png").exists() && !broken,
+    }
+}
+
+/// True when the depth map on disk needs no regeneration: one exists, and either the
+/// current model wrote it (see the marker) or no model did — a hand-dropped `depth.png`
+/// always wins, as the README promises. Maps by an older model regenerate.
+fn depth_done(dir: &Path) -> bool {
+    if !dir.join("depth.png").exists() {
+        return false;
+    }
+    match std::fs::read_to_string(dir.join(DEPTH_MODEL_FILE)) {
+        // No marker: the user's own map — keep it.
+        Err(_) => true,
+        Ok(m) => m.trim() == DEPTH_MODEL,
     }
 }
 
@@ -132,6 +158,7 @@ impl Enhancer {
             let _ = std::fs::write(dir.join("hero.sr"), b"");
             // A new image needs new maps.
             let _ = std::fs::remove_file(dir.join("depth.png"));
+            let _ = std::fs::remove_file(dir.join(DEPTH_MODEL_FILE));
             let _ = std::fs::remove_file(dir.join("segment.png"));
             out.upscaled = true;
         }
@@ -140,6 +167,8 @@ impl Enhancer {
             let img = image::open(&hero).map_err(|e| e.to_string())?;
             let depth = self.depth_map(&img)?;
             depth.save(dir.join("depth.png")).map_err(|e| e.to_string())?;
+            // Record which model made the map; a swap regenerates what the old one wrote.
+            let _ = std::fs::write(dir.join(DEPTH_MODEL_FILE), DEPTH_MODEL);
             out.depth = true;
         }
         if want_seg || out.upscaled {
@@ -245,9 +274,11 @@ impl Enhancer {
         Ok(slot.as_mut().unwrap())
     }
 
-    /// Relative depth (near = white), at inference resolution, lightly smoothed.
+    /// Relative depth (near = white), at inference resolution, smoothed edge-aware: flat
+    /// inside subjects, sharp across the picture's own edges.
     fn depth_map(&mut self, img: &DynamicImage) -> Result<image::GrayImage, String> {
         let path = ensure_model(DEPTH_FILE, DEPTH_URL, DEPTH_SHA, None)?;
+        ensure_companions(&[(DEPTH_DATA_FILE, DEPTH_DATA_URL, DEPTH_DATA_SHA)])?;
         let session = Self::session(&mut self.env, &mut self.depth, &path)?;
         let (w, h) = img.dimensions();
         let scale = DEPTH_SHORT as f32 / w.min(h) as f32;
@@ -262,18 +293,37 @@ impl Enhancer {
                 data[c * plane + i] = (p[c] as f32 / 255.0 - mean[c]) / std[c];
             }
         }
-        let input = Tensor::from_array((vec![1i64, 3, ih as i64, iw as i64], data)).map_err(|e| e.to_string())?;
+        // The export wraps DA3's multi-view API: [batch, views, 3, h, w]. One view here.
+        let input = Tensor::from_array((vec![1i64, 1, 3, ih as i64, iw as i64], data)).map_err(|e| e.to_string())?;
         let outputs = session.run(ort::inputs![input]).map_err(|e| e.to_string())?;
-        let (shape, depth) = outputs[0].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
+        let (shape, raw) = outputs[0].try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
         let dims: Vec<i64> = shape.iter().copied().collect();
-        let (oh, ow) = (dims[dims.len() - 2] as u32, dims[dims.len() - 1] as u32);
-        let (lo, hi) = depth.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        let (oh, ow) = (dims[dims.len() - 2] as usize, dims[dims.len() - 1] as usize);
+        // DA3 predicts distance (small = near); the pipeline wants near = white.
+        let raw: Vec<f32> = raw[..oh * ow].iter().map(|&v| -v).collect();
+        // Robust stretch: the middle 98% of the scene maps to the full range, so one
+        // stray extreme pixel can't compress everything else into a sliver of it.
+        let mut sorted = raw.clone();
+        sorted.sort_by(f32::total_cmp);
+        let q = |p: f32| sorted[((sorted.len() - 1) as f32 * p).round() as usize];
+        let (lo, hi) = (q(0.01), q(0.99));
         let span = (hi - lo).max(1e-6);
-        let gray = image::GrayImage::from_fn(ow, oh, |x, y| {
-            image::Luma([(((depth[(y * ow + x) as usize] - lo) / span) * 255.0).round() as u8])
-        });
-        // A little smoothing keeps layer seams soft when the background moves.
-        Ok(image::imageops::blur(&gray, 2.5))
+        let d: Vec<f32> = raw.iter().map(|&v| ((v - lo) / span).clamp(0.0, 1.0)).collect();
+        // Edge-aware smoothing, guided by the hero's own luminance: depth flattens inside
+        // a subject but its boundaries stay crisp, so the depth cards cut clean.
+        let guide_img = if (iw, ih) == (ow as u32, oh as u32) {
+            rgb
+        } else {
+            image::imageops::resize(&rgb, ow as u32, oh as u32, image::imageops::FilterType::Triangle)
+        };
+        let guide: Vec<f32> = guide_img
+            .pixels()
+            .map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0)
+            .collect();
+        let d = joint_bilateral(&d, &guide, ow, oh, 5, 2.2, 0.10);
+        Ok(image::GrayImage::from_fn(ow as u32, oh as u32, |x, y| {
+            image::Luma([(d[y as usize * ow + x as usize] * 255.0).round() as u8])
+        }))
     }
 
     /// 4x super-resolution in overlapping tiles, then fitted back within 3840x2160.
@@ -358,14 +408,46 @@ fn save_jpeg(img: &DynamicImage, path: &Path, quality: u8) -> Result<(), String>
     enc.encode_image(&img.to_rgb8()).map_err(|e| e.to_string())
 }
 
-/// Downloads (and for zips, extracts) a model once, checking the download's SHA-256.
-fn ensure_model(file: &str, url: &str, sha: &str, zip_prefix: Option<&str>) -> Result<PathBuf, String> {
-    let dir = models_dir();
-    let path = dir.join(file);
-    if path.exists() {
-        return Ok(path);
+/// Edge-aware smoothing for depth maps: a joint bilateral filter. Each value averages its
+/// neighbours weighted by distance in the image *and* distance in `guide` (the hero's own
+/// luminance, 0..1), so depth flattens inside a subject while refusing to mix across the
+/// picture's edges — boundaries survive sharp enough to cut clean depth cards.
+fn joint_bilateral(v: &[f32], guide: &[f32], w: usize, h: usize, radius: usize, sigma_s: f32, sigma_r: f32) -> Vec<f32> {
+    // The spatial part of the weight is the same for every pixel: one small table
+    // instead of an exp() per tap.
+    let taps: Vec<(isize, isize, f32)> = {
+        let inv = 1.0 / (2.0 * sigma_s * sigma_s);
+        let mut t = Vec::with_capacity((2 * radius + 1).pow(2));
+        for dy in -(radius as isize)..=radius as isize {
+            for dx in -(radius as isize)..=radius as isize {
+                t.push((dx, dy, (-(dx * dx + dy * dy) as f32 * inv).exp()));
+            }
+        }
+        t
+    };
+    let inv_r = 1.0 / (2.0 * sigma_r * sigma_r);
+    let at = |buf: &[f32], x: isize, y: isize| {
+        buf[y.clamp(0, h as isize - 1) as usize * w + x.clamp(0, w as isize - 1) as usize]
+    };
+    let mut out = vec![0f32; w * h];
+    for y in 0..h as isize {
+        for x in 0..w as isize {
+            let g0 = at(guide, x, y);
+            let (mut acc, mut wsum) = (0f32, 0f32);
+            for &(dx, dy, ws) in &taps {
+                let wr = (-(at(guide, x + dx, y + dy) - g0).powi(2) * inv_r).exp();
+                let wt = ws * wr;
+                acc += wt * at(v, x + dx, y + dy);
+                wsum += wt;
+            }
+            out[y as usize * w + x as usize] = acc / wsum.max(1e-12);
+        }
     }
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    out
+}
+
+/// Downloads one file and checks it against its pinned SHA-256.
+fn fetch_verified(url: &str, file: &str, sha: &str) -> Result<Vec<u8>, String> {
     eprintln!("gdash: downloading {file}");
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(300)))
@@ -379,6 +461,18 @@ fn ensure_model(file: &str, url: &str, sha: &str, zip_prefix: Option<&str>) -> R
     if got != sha {
         return Err(fail(&format!("checksum mismatch ({got})")));
     }
+    Ok(bytes)
+}
+
+/// Downloads (and for zips, extracts) a model once, checking the download's SHA-256.
+fn ensure_model(file: &str, url: &str, sha: &str, zip_prefix: Option<&str>) -> Result<PathBuf, String> {
+    let dir = models_dir();
+    let path = dir.join(file);
+    if path.exists() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let bytes = fetch_verified(url, file, sha)?;
     match zip_prefix {
         None => write_atomic(&path, &bytes)?,
         Some(prefix) => {
@@ -402,14 +496,46 @@ fn ensure_model(file: &str, url: &str, sha: &str, zip_prefix: Option<&str>) -> R
     Ok(path)
 }
 
+/// ONNX external-data companions a graph references by name: downloaded beside the model
+/// file and verified the same way. (The file name must stay what the graph references.)
+fn ensure_companions(files: &[(&str, &str, &str)]) -> Result<(), String> {
+    let dir = models_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for (file, url, sha) in files {
+        let path = dir.join(file);
+        if path.exists() {
+            continue;
+        }
+        let bytes = fetch_verified(url, file, sha)?;
+        write_atomic(&path, &bytes)?;
+    }
+    Ok(())
+}
+
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("part");
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+/// One progress line to the dashboard, which reads this process's stdout over a pipe.
+/// If the dashboard exits first, the pipe breaks — that must not kill the pass: the files
+/// on disk are the point, the live relay is a nicety. From the first failed write on,
+/// this stays quiet and lets the work carry on.
+fn say(live: &mut bool, line: impl std::fmt::Display) {
+    if !*live {
+        return;
+    }
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+        *live = false;
+    }
+}
+
 /// `gdash --enhance-art`: enhances every game that needs it, printing one line per game.
-/// The dashboard reads these lines to reload art as it improves.
+/// The dashboard reads these lines to reload art as it improves — and if it exits before
+/// the queue is done, the pass keeps going quietly instead of dying with its pipe.
 pub fn run_cli(games: &[Game]) {
     // One enhancer at a time (a second dashboard, or a manual run).
     let lock = models_dir().join("enhance.lock");
@@ -420,8 +546,9 @@ pub fn run_cli(games: &[Game]) {
     if stale {
         let _ = std::fs::remove_file(&lock);
     }
+    let mut live = true;
     if std::fs::OpenOptions::new().write(true).create_new(true).open(&lock).is_err() {
-        println!("total 0");
+        say(&mut live, "total 0");
         return;
     }
     struct Unlock(PathBuf);
@@ -433,7 +560,7 @@ pub fn run_cli(games: &[Game]) {
     let _unlock = Unlock(lock);
 
     let total = pending(games);
-    println!("total {total}");
+    say(&mut live, format!("total {total}"));
     let mut enhancer = Enhancer::new();
     let mut n = 0;
     for game in games {
@@ -443,25 +570,177 @@ pub fn run_cli(games: &[Game]) {
         n += 1;
         let start = std::time::Instant::now();
         match enhancer.enhance(game) {
-            Ok(e) => println!(
-                "done {} {} [{n}/{total}] upscaled={} depth={} segment={} {:.1}s",
-                e.id,
-                game.title.replace(' ', "_"),
-                e.upscaled,
-                e.depth,
-                e.segment,
-                start.elapsed().as_secs_f32()
+            Ok(e) => say(
+                &mut live,
+                format!(
+                    "done {} {} [{n}/{total}] upscaled={} depth={} segment={} {:.1}s",
+                    e.id,
+                    game.title.replace(' ', "_"),
+                    e.upscaled,
+                    e.depth,
+                    e.segment,
+                    start.elapsed().as_secs_f32()
+                ),
             ),
             Err(err) if err.starts_with(MODEL_ERR) => {
                 // No models (offline?): stop, and try again next time.
-                println!("fail {} {err}", game.id);
+                say(&mut live, format!("fail {} {err}", game.id));
                 return;
             }
             Err(err) => {
                 // Don't retry a broken image forever.
                 let _ = std::fs::write(art::game_dir(&game.id).join("depth.none"), err.as_bytes());
-                println!("fail {} {err}", game.id);
+                say(&mut live, format!("fail {} {err}", game.id));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joint_bilateral_flattens_specks_and_keeps_edges() {
+        let (w, h) = (40usize, 20);
+        // A hard luminance edge at x = 20, with depth stepping across it.
+        let guide: Vec<f32> = (0..w * h).map(|i| if i % w < w / 2 { 0.9 } else { 0.1 }).collect();
+        let v: Vec<f32> = (0..w * h).map(|i| if i % w < w / 2 { 0.8 } else { 0.2 }).collect();
+        let out = joint_bilateral(&v, &guide, w, h, 3, 1.5, 0.08);
+        // Pixels beside the edge barely mix with the far side.
+        assert!(out[10 * w + 19] > 0.75, "{}", out[10 * w + 19]);
+        assert!(out[10 * w + 20] < 0.25, "{}", out[10 * w + 20]);
+
+        // A lone speck on a flat surface is smoothed back into it.
+        let mut v = vec![0.5f32; w * h];
+        v[5 * w + 5] = 1.0;
+        let flat = vec![0.5f32; w * h];
+        let out = joint_bilateral(&v, &flat, w, h, 3, 1.5, 0.08);
+        assert!(out[5 * w + 5] < 0.6, "{}", out[5 * w + 5]);
+    }
+
+    /// `cargo test probe_depth_model -- --ignored --nocapture`: prints the depth model's
+    /// I/O contract and runs it on two cached heroes, reporting where the sky band and
+    /// the ground band land in the raw output. A development tool for model swaps: the
+    /// convention (which end is near) is read from what it prints, not assumed.
+    #[test]
+    #[ignore]
+    fn probe_depth_model() {
+        let env = ort::init().with_name("gdash-probe").build().unwrap();
+        let path = ensure_model(DEPTH_FILE, DEPTH_URL, DEPTH_SHA, None).unwrap();
+        ensure_companions(&[(DEPTH_DATA_FILE, DEPTH_DATA_URL, DEPTH_DATA_SHA)]).unwrap();
+        let mut session = Session::builder(&env).unwrap().commit_from_file(&path).unwrap();
+        for i in session.inputs() {
+            println!("input  {} {:?}", i.name(), i.dtype());
+        }
+        for o in session.outputs() {
+            println!("output {} {:?}", o.name(), o.dtype());
+        }
+        for id in ["pc-call-of-duty-ghosts", "pc-age-of-mythology-retold"] {
+            let Some(hero) = art::cached(id, ArtKind::Hero) else {
+                println!("{id}: no hero in the cache");
+                continue;
+            };
+            let img = image::open(&hero).unwrap();
+            let (w, h) = img.dimensions();
+            let scale = DEPTH_SHORT as f32 / w.min(h) as f32;
+            let round14 = |v: f32| ((v / 14.0).round().max(1.0) * 14.0) as u32;
+            let (iw, ih) = (round14(w as f32 * scale), round14(h as f32 * scale));
+            let rgb = img.resize_exact(iw, ih, image::imageops::FilterType::CatmullRom).to_rgb8();
+            let (mean, std) = ([0.485f32, 0.456, 0.406], [0.229f32, 0.224, 0.225]);
+            let plane = (iw * ih) as usize;
+            let mut data = vec![0f32; 3 * plane];
+            for (i, p) in rgb.pixels().enumerate() {
+                for c in 0..3 {
+                    data[c * plane + i] = (p[c] as f32 / 255.0 - mean[c]) / std[c];
+                }
+            }
+            // The export wraps DA3's multi-view API: [batch, views, 3, h, w]; one view here.
+            let input = Tensor::from_array((vec![1i64, 1, 3, ih as i64, iw as i64], data)).unwrap();
+            let t0 = std::time::Instant::now();
+            let outputs = match session.run(ort::inputs![input]) {
+                Ok(o) => o,
+                Err(e) => {
+                    println!("{id}: {iw}x{ih} failed: {e}");
+                    continue;
+                }
+            };
+            println!("{id}: {iw}x{ih} ok in {:.2}s", t0.elapsed().as_secs_f32());
+            let (shape, depth) = outputs[0].try_extract_tensor::<f32>().unwrap();
+            let dims: Vec<i64> = shape.iter().copied().collect();
+            let (oh, ow) = (dims[dims.len() - 2] as usize, dims[dims.len() - 1] as usize);
+            let v = |x: usize, y: usize| depth[y * ow + x];
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            let (mut top, mut bot) = (0f32, 0f32);
+            let band = (oh / 7).max(1);
+            for y in 0..oh {
+                for x in 0..ow {
+                    let d = v(x, y);
+                    lo = lo.min(d);
+                    hi = hi.max(d);
+                    if y < band {
+                        top += d;
+                    }
+                    if y >= oh - band {
+                        bot += d;
+                    }
+                }
+            }
+            let n = (ow * band) as f32;
+            println!(
+                "  shape {dims:?}  min {lo:.3} max {hi:.3}  sky-band {:.3}  ground-band {:.3}  center {:.3}",
+                top / n,
+                bot / n,
+                v(ow / 2, oh / 2)
+            );
+        }
+    }
+
+    /// `GDASH_REGEN_IDS=a,b cargo test regen_depth -- --ignored --nocapture`: regenerates
+    /// `depth.png` for the listed games with the current pipeline (no SR, no segmentation),
+    /// so smoothing and normalization can be iterated on a small set before a full run.
+    /// Prints post-processing stats: the far sky band should sit dark (near = white), and
+    /// the map should use the whole 0..255 range.
+    #[test]
+    #[ignore]
+    fn regen_depth() {
+        let ids = std::env::var("GDASH_REGEN_IDS").expect("GDASH_REGEN_IDS");
+        let mut enhancer = Enhancer::new();
+        for id in ids.split(',').filter(|s| !s.is_empty()) {
+            let Some(hero) = art::cached(id, ArtKind::Hero) else {
+                println!("{id}: no hero in the cache");
+                continue;
+            };
+            let img = image::open(&hero).unwrap();
+            let t0 = std::time::Instant::now();
+            let depth = enhancer.depth_map(&img).unwrap();
+            let dir = art::game_dir(id);
+            depth.save(dir.join("depth.png")).unwrap();
+            let _ = std::fs::write(dir.join(DEPTH_MODEL_FILE), DEPTH_MODEL);
+            let (w, h) = (depth.width() as usize, depth.height() as usize);
+            let px = depth.as_raw();
+            let band = (h / 7).max(1);
+            let mean = |ys: std::ops::Range<usize>| {
+                let (mut sum, mut n) = (0f64, 0usize);
+                for y in ys {
+                    for x in 0..w {
+                        sum += px[y * w + x] as f64;
+                        n += 1;
+                    }
+                }
+                sum / n.max(1) as f64
+            };
+            let (mut lo, mut hi) = (u8::MAX, u8::MIN);
+            for &p in px {
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+            println!(
+                "{id}: {w}x{h} in {:.1}s  range {lo}..{hi}  sky-band {:.0}  ground-band {:.0}",
+                t0.elapsed().as_secs_f32(),
+                mean(0..band),
+                mean(h - band..h)
+            );
         }
     }
 }
